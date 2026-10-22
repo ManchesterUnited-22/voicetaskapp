@@ -1,5 +1,6 @@
 import '../../../core/config.dart';
 import '../../../core/format.dart';
+import '../../../core/vi_text.dart';
 import '../../tasks/domain/app_task.dart';
 import '../../tasks/domain/auto_scheduler.dart';
 import '../../tasks/domain/reminder_scheduler.dart';
@@ -132,7 +133,7 @@ class CommandHandler {
 
     if (cmd.intent == Intent.needClarification) {
       _pending = _pending == null ? raw : '$_pending | $raw';
-      return cmd.question ?? 'Bạn có thể nói rõ hơn được không?';
+      return vietnameseOr(cmd.question, 'Bạn có thể nói rõ hơn được không?');
     }
     _pending = null;
 
@@ -157,9 +158,9 @@ class CommandHandler {
   }
 
   String _chitchat(AiCommand c) {
-    final r = c.reply;
-    if (r != null && r.isNotEmpty) return r;
-    return 'Chào bạn! Mình là trợ lý công việc, bạn cần mình xếp lịch gì không?';
+    // Nếu mô hình lỡ trả lời tiếng Anh thì dùng câu tiếng Việt mặc định.
+    return vietnameseOr(c.reply,
+        'Chào bạn! Mình là trợ lý công việc, bạn cần mình xếp lịch gì không?');
   }
 
   Future<String> _undoLast(DateTime now) async {
@@ -383,13 +384,26 @@ class CommandHandler {
         : 'Đã đánh dấu hoàn thành ${t.length} công việc.';
   }
 
+  /// Trả lời "hôm nay / ngày mai / từ 2h đến 5h chiều... có việc gì".
+  /// Có việc trong khoảng đó thì liệt kê, không có thì nói rõ là không có.
   String _query(AiCommand c, List<AppTask> tasks, DateTime now) {
     final filter = c.queryFilter ?? 'all';
     final hasRange = c.rangeStart != null || c.rangeEnd != null;
-    final from = c.rangeStart ?? DateTime(now.year, now.month, now.day);
-    final to = c.rangeEnd ?? from.add(const Duration(days: 1));
+    final today = DateTime(now.year, now.month, now.day);
+    var from = c.rangeStart ?? today;
+    var to = c.rangeEnd ?? from.add(const Duration(days: 1));
+    if (!to.isAfter(from)) {
+      // Mô hình đưa khoảng rỗng/ngược: lấy trọn ngày của mốc được nói.
+      if (c.rangeStart == null && c.rangeEnd != null) {
+        from = DateTime(to.year, to.month, to.day);
+      }
+      to = DateTime(from.year, from.month, from.day).add(const Duration(days: 1));
+      from = DateTime(from.year, from.month, from.day);
+    }
+    final label = formatRangeVi(from, to, now); // vd "hôm nay", "ngày mai"
+    final singleDay = isSameDay(from, to.subtract(const Duration(minutes: 1)));
 
-    String when(AppTask t) => isSameDay(t.dueDate, now)
+    String when(AppTask t) => singleDay || isSameDay(t.dueDate, now)
         ? formatTimeVi(t.dueDate)
         : formatDateTimeVi(t.dueDate, now);
     String describe(List<AppTask> l, {bool withTime = true}) {
@@ -401,45 +415,55 @@ class CommandHandler {
       return '$shown$more';
     }
 
+    bool inWindow(DateTime d) => !d.isBefore(from) && d.isBefore(to);
+
     // Việc đã hoàn thành: lọc theo thời điểm hoàn thành.
-    if (filter == 'done') {
+    List<AppTask> doneIn() {
       DateTime at(AppTask t) => t.completedAt ?? t.dueDate;
-      final done = tasks
-          .where((t) =>
-              t.isCompleted && !at(t).isBefore(from) && at(t).isBefore(to))
-          .toList()
+      return tasks.where((t) => t.isCompleted && inWindow(at(t))).toList()
         ..sort((a, b) => at(a).compareTo(at(b)));
-      if (done.isEmpty) return 'Bạn chưa hoàn thành việc nào trong khoảng này.';
-      return 'Bạn đã hoàn thành ${done.length} việc: ${describe(done, withTime: false)}.';
+    }
+
+    if (filter == 'done') {
+      final done = doneIn();
+      if (done.isEmpty) return 'Bạn chưa hoàn thành việc nào $label.';
+      return 'Bạn đã hoàn thành ${done.length} việc $label: ${describe(done, withTime: false)}.';
     }
 
     // Hỏi "quá hạn" mà không nêu khoảng thời gian → xét mọi việc quá hạn.
     final noRange = filter == 'overdue' && !hasRange;
     final inRange = tasks
-        .where((t) =>
-            !t.isCompleted &&
-            (noRange || (!t.dueDate.isBefore(from) && t.dueDate.isBefore(to))))
+        .where((t) => !t.isCompleted && (noRange || inWindow(t.dueDate)))
         .toList()
       ..sort((a, b) => a.dueDate.compareTo(b.dueDate));
     final overdue = inRange.where((t) => t.isOverdue(now)).toList();
     final upcoming = inRange.where((t) => !t.isOverdue(now)).toList();
+    final where = noRange ? '' : ' $label';
 
     if (filter == 'overdue') {
-      if (overdue.isEmpty) return 'Bạn không có việc nào quá hạn trong khoảng này.';
-      return 'Bạn có ${overdue.length} việc quá hạn: ${describe(overdue)}.';
+      if (overdue.isEmpty) return 'Bạn không có việc nào quá hạn$where.';
+      return 'Bạn có ${overdue.length} việc quá hạn$where: ${describe(overdue)}.';
     }
     if (filter == 'upcoming') {
-      if (upcoming.isEmpty) return 'Bạn không có việc nào sắp tới hạn trong khoảng này.';
-      return 'Bạn có ${upcoming.length} việc sắp tới hạn: ${describe(upcoming)}.';
+      if (upcoming.isEmpty) return 'Bạn không có việc nào sắp tới hạn $label.';
+      return 'Bạn có ${upcoming.length} việc sắp tới hạn $label: ${describe(upcoming)}.';
     }
-    if (inRange.isEmpty) return 'Bạn không có công việc nào trong khoảng này.';
-    if (overdue.isEmpty) {
-      return 'Bạn có ${upcoming.length} việc sắp tới hạn: ${describe(upcoming)}.';
+
+    // filter == 'all'
+    if (inRange.isEmpty) {
+      final done = doneIn();
+      if (done.isEmpty) return 'Bạn không có công việc nào $label.';
+      // Có việc nhưng đều đã xong: nói rõ để không gây hiểu nhầm.
+      return 'Bạn không còn việc nào cần làm $label. '
+          'Bạn đã hoàn thành ${done.length} việc: ${describe(done, withTime: false)}.';
     }
-    if (upcoming.isEmpty) {
-      return 'Bạn có ${overdue.length} việc quá hạn: ${describe(overdue)}.';
+    final sb = StringBuffer(
+        'Bạn có ${inRange.length} việc $label: ${describe(inRange)}.');
+    if (overdue.isNotEmpty && upcoming.isNotEmpty) {
+      sb.write(' Trong đó ${overdue.length} việc đã quá hạn.');
+    } else if (overdue.isNotEmpty) {
+      sb.write(' Tất cả đều đã quá hạn.');
     }
-    return 'Bạn có ${overdue.length} việc quá hạn: ${describe(overdue)}. '
-        'Ngoài ra có ${upcoming.length} việc sắp tới hạn: ${describe(upcoming)}.';
+    return sb.toString();
   }
 }

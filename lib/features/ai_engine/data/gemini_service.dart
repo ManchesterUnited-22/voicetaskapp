@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 
 import '../../../core/config.dart';
+import '../../../core/vi_text.dart';
 import '../../analytics/domain/performance_metrics.dart';
 import '../../tasks/domain/app_task.dart';
 import '../domain/ai_command.dart';
@@ -43,7 +44,7 @@ Quy đổi thời gian tương đối ("sáng mai 8h", "chiều thứ 6 tuần s
 
 Schema:
 {
-  "intent": "createTask | updateTask | deleteTask | completeTask | queryTasks | askPerformance | chichat | needClarification | unknown",
+  "intent": "createTask | updateTask | deleteTask | completeTask | queryTasks | askPerformance | chitchat | needClarification | unknown",
   "title": string|null,            // tên việc, bỏ từ đệm như "nhắc tôi", "tạo giúp tôi"
   "dueDate": string|null,          // ISO-8601; createTask/updateTask
   "priority": "high|medium|low"|null,
@@ -52,11 +53,10 @@ Schema:
   "targetTaskIds": [string],       // id lấy từ DANH SÁCH CÔNG VIỆC; nhiều id nếu thao tác hàng loạt
   "rangeStart": string|null, "rangeEnd": string|null,   // queryTasks
   "period": "day|week|month|year"|null,                 // askPerformance
-  "question": string|null,
-  "queryFilter": "overdue|upcoming|all"|null,
-  "reply": string|null,
+  "queryFilter": "overdue|upcoming|done|all"|null,       // queryTasks
+  "reply": string|null,            // câu trả lời xã giao khi chitchat (tiếng Việt)
+  "question": string|null,         // câu hỏi làm rõ khi needClarification (tiếng Việt)
   "isBatch": boolean
-           // câu hỏi làm rõ khi needClarification
 }
 
 Quy tắc:
@@ -80,7 +80,10 @@ Quy tắc:
 - updateTask/deleteTask/completeTask: chọn đúng task trong DANH SÁCH; "xóa tất cả việc quá hạn tuần trước" → liệt kê mọi id thỏa điều kiện.
 - Nếu thiếu thực thể bắt buộc (vd "sửa lịch họp" nhưng không nói giờ mới, hoặc có nhiều task khớp mơ hồ) → intent = "needClarification" kèm "question" ngắn gọn bằng tiếng Việt.
 - "Hôm nay tôi làm việc thế nào?" → askPerformance với period phù hợp.
-- Hỏi "hôm nay/ngày mai có việc gì" → queryTasks với rangeStart/rangeEnd bao trọn khoảng đó.
+- Hỏi "hôm nay/ngày mai/tuần này/hôm qua có việc gì" → intent = "queryTasks", queryFilter = "all",
+  rangeStart = 00:00 của ngày đầu, rangeEnd = 00:00 của NGÀY SAU ngày cuối (vd "hôm nay" → từ 00:00 hôm nay đến 00:00 ngày mai).
+  Hỏi một khoảng giờ cụ thể thì dùng đúng giờ nói. Tuyệt đối không dùng createTask cho câu hỏi.
+- Hỏi "đã hoàn thành việc gì" → queryTasks với queryFilter = "done".
 - Không hiểu → intent = "unknown".
 ''';
   }
@@ -122,6 +125,8 @@ Quy tắc:
     } else {
       user.writeln('Câu lệnh: "$text"');
     }
+    user.writeln(
+        'Nhắc lại: chỉ trả về JSON; mọi chữ hướng tới người dùng (reply, question) phải là tiếng Việt.');
     final raw = await _generate(
       system: buildParserPrompt(n),
       user: user.toString(),
@@ -134,16 +139,20 @@ Quy tắc:
   /// UC-02: sinh nhận xét/lời khuyên năng suất từ các chỉ số.
   Future<String> coach(PerformanceMetrics m, String periodLabel) {
     const system = '''
-// cũ
-Bạn là huấn luyện viên năng suất cá nhân, chỉ nói tiếng Việt, thân thiện và tự nhiên như đang trò chuyện.
-// mới
 Bạn là huấn luyện viên năng suất cá nhân. BẮT BUỘC chỉ dùng tiếng Việt, tuyệt đối không chèn từ tiếng Anh.
 Viết câu ngắn, rõ ràng, dễ đọc thành tiếng, thân thiện và tự nhiên như đang trò chuyện.
 Dựa trên các chỉ số được cung cấp, viết nhận xét ngắn (tối đa 4 câu): khen điểm tốt, chỉ ra mẫu hành vi đáng chú ý
 (vd việc xếp buổi chiều hay trễ, khung giờ hiệu quả nhất), và đề xuất MỘT hành động cụ thể, kết thúc bằng một câu hỏi gợi mở.
 Không dùng Markdown, không dùng danh sách. Không bịa số liệu ngoài dữ liệu đã cho.''';
     final user = 'Kỳ phân tích: $periodLabel\n${jsonEncode(m.toJson())}';
-    return _generate(system: system, user: user, json: false, temperature: 0.7);
+    return _generate(system: system, user: user, json: false, temperature: 0.7)
+        .then((text) {
+      // Lỡ trả lời tiếng Anh thì bỏ, để nơi gọi dùng nhận xét dự phòng tiếng Việt.
+      if (!looksVietnamese(text)) {
+        throw GeminiException('Phản hồi không phải tiếng Việt');
+      }
+      return text;
+    });
   }
 
   Future<String> _generate({

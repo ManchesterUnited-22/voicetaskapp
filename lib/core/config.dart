@@ -8,6 +8,9 @@ class AppConfig {
   static const geminiModel = 'gemini-2.5-flash';
     /// CHỈ ĐỂ CHỤP ẢNH BÁO CÁO: dùng dữ liệu mẫu cho phần đánh giá hiệu suất.
   /// Bật: flutter run --dart-define=DEMO_PERFORMANCE=true
+  ///   /// CHỈ ĐỂ CHỤP ẢNH BÁO CÁO: dùng kho công việc giả trong bộ nhớ (không ghi Firestore).
+  /// Bật: flutter run --dart-define=DEMO_DATA=true
+  static const demoData = bool.fromEnvironment('DEMO_DATA');
   static const demoPerformance = bool.fromEnvironment('DEMO_PERFORMANCE');
   /// Giờ làm việc dùng cho thuật toán Auto-Scheduling.
   static const workDayStartHour = 7;

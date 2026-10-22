@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-
+import '../../core/vi_text.dart';
 import '../../core/format.dart';
 import '../../features/tasks/domain/app_task.dart';
 import '../app_theme.dart';
@@ -14,7 +14,7 @@ class TasksScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = context.watch<TaskProvider>();
-    if (p.error != null) return _ErrorState(message: '${p.error}');
+    if (p.error != null) return _ErrorState(message: friendlyError(p.error!));
     if (p.all.isEmpty) return const _EmptyState();
 
     final now = DateTime.now();

@@ -1,8 +1,9 @@
 import '../../../core/config.dart';
 import '../../ai_engine/data/gemini_service.dart';
+import '../../tasks/domain/app_task.dart';
 import '../../tasks/domain/task_repository.dart';
 import '../domain/performance_metrics.dart';
-import '../../tasks/domain/app_task.dart';
+
 class CoachReport {
   final PerformanceMetrics metrics;
   final String feedback;
@@ -45,10 +46,28 @@ class PerformanceService {
     final n = now ?? DateTime.now();
     final p = periods.containsKey(period) ? period : 'week';
     final (from, to) = rangeFor(p, n);
-    final tasks = AppConfig.demoPerformance ? _demoTasks(n) : await repo.getBetween(from, to);
+
+    // Toàn bộ lịch sử: dùng để biết người dùng đã có đủ số ngày dữ liệu chưa
+    // (không tính riêng trong kỳ, nếu không hỏi "hôm nay" sẽ luôn chỉ có 1 ngày).
+    final history =
+        AppConfig.demoPerformance ? _demoTasks(n) : await repo.getAll();
+
+    // Các việc nằm trong kỳ được hỏi (cờ demo cũ dùng chung dữ liệu cho mọi kỳ).
+    final tasks = AppConfig.demoPerformance
+        ? history
+        : history
+            .where((t) => !t.dueDate.isBefore(from) && t.dueDate.isBefore(to))
+            .toList();
     final metrics = calculator.compute(tasks, n);
 
-    if (!metrics.hasEnoughData) {
+    // Số ngày đã có dữ liệu (chỉ tính đến hết hôm nay, không tính ngày tương lai).
+    final endOfToday = DateTime(n.year, n.month, n.day + 1);
+    final historyDays = history
+        .where((t) => t.dueDate.isBefore(endOfToday))
+        .map((t) => '${t.dueDate.year}-${t.dueDate.month}-${t.dueDate.day}')
+        .toSet()
+        .length;
+    if (historyDays < AppConfig.minDaysForCoaching) {
       return CoachReport(
         metrics,
         'Mình cần dữ liệu của ít nhất ${AppConfig.minDaysForCoaching} ngày để phân tích. '
@@ -56,14 +75,23 @@ class PerformanceService {
         false,
       );
     }
+    if (tasks.isEmpty) {
+      return CoachReport(
+        metrics,
+        'Bạn chưa có công việc nào ${periods[p]} để phân tích.',
+        false,
+      );
+    }
 
     String feedback;
     try {
+      // gemini.coach đã kiểm tra tiếng Việt, lỡ trả tiếng Anh sẽ ném lỗi → dùng bản dự phòng.
       feedback = await gemini.coach(metrics, periods[p]!);
     } catch (_) {
       feedback = _fallback(metrics, periods[p]!);
     }
-        if (!AppConfig.demoPerformance) {
+
+    if (!AppConfig.demoPerformance) {
       await repo.saveAnalytics({
         'period': p,
         'completionRate': metrics.completionRate,
@@ -82,11 +110,13 @@ class PerformanceService {
     DateTime? now,
   }) async {
     final n = now ?? DateTime.now();
-        if (AppConfig.demoPerformance) return null; // không gửi push giả
+    if (AppConfig.demoPerformance) return null; // không gửi push giả
     if (n.hour < AppConfig.dailyCoachHour) return null;
     final last = await repo.getLastDailyCoach();
     if (last != null &&
-        last.year == n.year && last.month == n.month && last.day == n.day) {
+        last.year == n.year &&
+        last.month == n.month &&
+        last.day == n.day) {
       return null;
     }
     // Phân tích theo tuần (đủ dữ liệu hơn một ngày) nhưng đánh dấu là nhận xét ngày.
@@ -96,7 +126,9 @@ class PerformanceService {
     await repo.setLastDailyCoach(n);
     return r.feedback;
   }
-    /// Dữ liệu mẫu trải 5 ngày gần nhất, dùng chung cho mọi kỳ (ngày/tuần/tháng/năm).
+
+  /// Dữ liệu mẫu trải 5 ngày gần nhất, dùng chung cho mọi kỳ (ngày/tuần/tháng/năm).
+  /// Chỉ dùng khi bật --dart-define=DEMO_PERFORMANCE=true.
   List<AppTask> _demoTasks(DateTime n) {
     var i = 0;
     AppTask t(int daysAgo, int hour, String title,
@@ -131,9 +163,14 @@ class PerformanceService {
       t(0, 22, 'Chuẩn bị bài mai'), // sắp tới hạn
     ];
   }
+
+  /// Nhận xét dự phòng (tiếng Việt) khi không gọi được AI hoặc AI trả lời sai ngôn ngữ.
   String _fallback(PerformanceMetrics m, String label) {
+    final head = label.isEmpty
+        ? label
+        : '${label[0].toUpperCase()}${label.substring(1)}';
     final sb = StringBuffer(
-        '$label bạn hoàn thành đúng hạn ${m.completionRate.round()}% công việc');
+        '$head bạn hoàn thành đúng hạn ${m.completionRate.round()}% công việc');
     if (m.overdue > 0) sb.write(', còn ${m.overdue} việc đang quá hạn');
     sb.write('.');
     if (m.peakProductiveHours != null) {

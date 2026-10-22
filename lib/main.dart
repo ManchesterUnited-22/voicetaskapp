@@ -9,6 +9,8 @@ import 'features/ai_engine/data/gemini_service.dart';
 import 'features/ai_engine/domain/command_handler.dart';
 import 'features/analytics/data/performance_service.dart';
 import 'features/auth/auth_service.dart';
+import 'core/config.dart';
+import 'features/tasks/data/demo_task_repository.dart';
 import 'features/notifications/notification_service.dart';
 import 'features/speech/voice_service.dart';
 import 'features/tasks/data/firestore_task_repository.dart';
@@ -123,7 +125,7 @@ class SessionScope extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        Provider<TaskRepository>(create: (_) => FirestoreTaskRepository(uid)),
+        Provider<TaskRepository>(create: (_) => AppConfig.demoData ? DemoTaskRepository() : FirestoreTaskRepository(uid)),
         Provider<ReminderScheduler>.value(value: notifications),
         Provider<GeminiService>(create: (_) => GeminiService()),
         Provider<VoiceService>(create: (_) => VoiceService()),

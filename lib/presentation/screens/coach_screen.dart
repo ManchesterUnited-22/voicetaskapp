@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-
+import '../../core/vi_text.dart';
 import '../../features/analytics/data/performance_service.dart';
 import '../../features/speech/voice_service.dart';
 
@@ -25,7 +25,7 @@ class _CoachScreenState extends State<CoachScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Lỗi: $e')));
+            .showSnackBar(SnackBar(content: Text(friendlyError(e))));
       }
     } finally {
       if (mounted) setState(() => _loading = false);
