@@ -5,7 +5,14 @@
       "name": "voice_task_app",
       "request": "launch",
       "type": "dart",
-      "args": ["--dart-define-from-file=env.json"]
+      "args": [
+        "--dart-define-from-file=env.json",
+        "--dart-define=DEMO_DATA=true",
+        "--dart-define=DEMO_PERFORMANCE=true",
+      ]
+
+      
+
     }
   ]
 }

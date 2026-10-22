@@ -148,8 +148,10 @@ class CommandHandler {
         return _complete(cmd, tasks, now);
       case Intent.queryTasks:
         return _query(cmd, tasks, now);
-      case Intent.askPerformance:
-        return performanceReply(cmd.period ?? 'week');
+     case Intent.askPerformance:
+  final fb = await performanceReply(cmd.period ?? 'week');
+  _pending = 'Trợ lý vừa nhận xét hiệu suất và hỏi lại người dùng: "$fb"';
+  return fb;
       case Intent.chitchat:
         return _chitchat(cmd);
       default:

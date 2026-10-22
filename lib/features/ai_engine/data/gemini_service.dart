@@ -85,6 +85,10 @@ Quy tắc:
   Hỏi một khoảng giờ cụ thể thì dùng đúng giờ nói. Tuyệt đối không dùng createTask cho câu hỏi.
 - Hỏi "đã hoàn thành việc gì" → queryTasks với queryFilter = "done".
 - Không hiểu → intent = "unknown".
+- Nếu NGỮ CẢNH là nhận xét hiệu suất kèm câu hỏi gợi mở và người dùng đồng ý (có, ok, được, làm đi…),
+  hãy đổi lịch các việc liên quan trong DANH SÁCH sang khung giờ hiệu quả được nhắc đến
+  (intent = updateTask, isBatch = true, liệt kê targetTaskIds, dueDate theo khung giờ đó).
+  Nếu người dùng từ chối hoặc nói chuyện khác thì xử lý như lệnh bình thường.
 ''';
   }
 

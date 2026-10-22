@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import '../features/auth/auth_service.dart';
 import 'app_theme.dart';
 import 'screens/assistant_screen.dart';
-import 'screens/coach_screen.dart';
 import 'screens/tasks_screen.dart';
 
 class HomeShell extends StatefulWidget {
@@ -18,7 +17,7 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
 
-  static const _titles = ['Trợ lý', 'Công việc', 'AI Coach'];
+  static const _titles = ['Trợ lý', 'Công việc'];
   static const _subtitles = [
     'Nói là xong, mọi việc để mình lo',
     'Tất cả việc cần làm của bạn',
@@ -27,7 +26,6 @@ class _HomeShellState extends State<HomeShell> {
   static const _pages = <Widget>[
     AssistantScreen(),
     TasksScreen(),
-    CoachScreen(),
   ];
 
   @override
@@ -161,11 +159,7 @@ class _HomeShellState extends State<HomeShell> {
                       selectedIcon: Icon(Icons.task_alt_rounded),
                       label: 'Công việc',
                     ),
-                    NavigationDestination(
-                      icon: Icon(Icons.insights_outlined),
-                      selectedIcon: Icon(Icons.insights_rounded),
-                      label: 'Coach',
-                    ),
+                   
                   ],
                 ),
               ),
