@@ -6,8 +6,24 @@ import '../../tasks/domain/reminder_scheduler.dart';
 import '../../tasks/domain/task_repository.dart';
 import 'ai_command.dart';
 
+/// Hành động đang chờ người dùng xác nhận (vd xóa hàng loạt).
+class _PendingConfirm {
+  final DateTime at;
+  final Future<String> Function() run;
+  _PendingConfirm(this.at, this.run);
+}
+
+/// Thao tác gần nhất, dùng cho "hoàn tác".
+class _Undo {
+  final DateTime at;
+  final String label;
+  final Future<void> Function() revert;
+  _Undo(this.at, this.label, this.revert);
+}
+
 /// Điều phối luồng ở Hình 2/3: văn bản → Gemini → (Auto-Scheduling) → Firestore
-/// → Push Notification → câu phản hồi (TTS). Giữ trạng thái Pending Clarification (mục 4.5).
+/// → Push Notification → câu phản hồi (TTS). Giữ trạng thái Pending Clarification (mục 4.5),
+/// xác nhận xóa hàng loạt và hoàn tác thao tác gần nhất.
 class CommandHandler {
   final CommandParser parser;
   final TaskRepository repo;
@@ -15,8 +31,6 @@ class CommandHandler {
   final AutoScheduler scheduler;
   final Future<String> Function(String period) performanceReply;
   final DateTime Function() clock;
-
-  String? _pending; // lệnh trước đang chờ làm rõ
 
   CommandHandler({
     required this.parser,
@@ -27,14 +41,87 @@ class CommandHandler {
     this.clock = DateTime.now,
   });
 
+  static const _pendingTtl = Duration(minutes: 2);
+  static const _undoTtl = Duration(minutes: 10);
+  static const _confirmDeleteFrom = 2; // xóa từ 2 việc trở lên thì hỏi xác nhận
+
+  static const _yes = <String>{
+    'có', 'ok', 'oke', 'đồng ý', 'xác nhận', 'chắc chắn', 'được', 'ừ',
+    'vâng', 'dạ', 'đúng rồi', 'làm đi', 'xóa đi', 'xoá đi',
+  };
+  static const _cancel = <String>{
+    'thôi', 'bỏ qua', 'hủy', 'huỷ', 'không cần', 'thôi khỏi', 'dừng lại',
+    'thôi bỏ đi',
+  };
+
+  String? _pendingValue; // lệnh trước đang chờ làm rõ (tự hết hạn sau 2 phút)
+  DateTime? _pendingAt;
+  _PendingConfirm? _confirm;
+  _Undo? _undo;
+
+  String? get _pending {
+    final at = _pendingAt;
+    if (_pendingValue != null &&
+        at != null &&
+        clock().difference(at) > _pendingTtl) {
+      _pendingValue = null;
+      _pendingAt = null;
+    }
+    return _pendingValue;
+  }
+
+  set _pending(String? v) {
+    _pendingValue = v;
+    _pendingAt = v == null ? null : clock();
+  }
+
   bool get awaitingClarification => _pending != null;
+
+  bool get awaitingConfirmation {
+    final c = _confirm;
+    if (c != null && clock().difference(c.at) > _pendingTtl) _confirm = null;
+    return _confirm != null;
+  }
+
+  static String _norm(String s) => s
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^\p{L}\p{M}\p{N}\s]', unicode: true), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  static bool _isUndo(String n) =>
+      n.contains('hoàn tác') ||
+      n.contains('khôi phục') ||
+      n.contains('phục hồi') ||
+      n == 'undo';
 
   Future<String> handle(String text) async {
     final raw = text.trim();
     if (raw.isEmpty) return 'Mình chưa nghe rõ, bạn nói lại nhé.';
     final now = clock();
-    final tasks = await repo.getAll();
+    final n = _norm(raw);
 
+    // 1) Đang chờ xác nhận (xóa hàng loạt).
+    final conf = _confirm;
+    if (conf != null) {
+      _confirm = null;
+      if (now.difference(conf.at) <= _pendingTtl) {
+        if (_yes.contains(n)) return conf.run();
+        if (n == 'không' || _cancel.contains(n)) {
+          return 'Mình đã hủy, chưa xóa gì cả.';
+        }
+        // Câu khác → bỏ xác nhận, xử lý như lệnh mới.
+      }
+    }
+    // 2) Hoàn tác thao tác gần nhất.
+    if (_isUndo(n)) return _undoLast(now);
+    // 3) Bỏ dở câu hỏi làm rõ.
+    if (_pending != null && _cancel.contains(n)) {
+      _pending = null;
+      return 'Mình đã bỏ qua yêu cầu trước nhé.';
+    }
+
+    final tasks = await repo.getAll();
     final cmd = await parser.parse(
       text: raw,
       tasks: tasks,
@@ -62,9 +149,27 @@ class CommandHandler {
         return _query(cmd, tasks, now);
       case Intent.askPerformance:
         return performanceReply(cmd.period ?? 'week');
+      case Intent.chitchat:
+        return _chitchat(cmd);
       default:
         return 'Mình chưa hiểu yêu cầu này. Bạn thử nói như "sáng mai 9h họp dự án" nhé.';
     }
+  }
+
+  String _chitchat(AiCommand c) {
+    final r = c.reply;
+    if (r != null && r.isNotEmpty) return r;
+    return 'Chào bạn! Mình là trợ lý công việc, bạn cần mình xếp lịch gì không?';
+  }
+
+  Future<String> _undoLast(DateTime now) async {
+    final u = _undo;
+    _undo = null;
+    if (u == null || now.difference(u.at) > _undoTtl) {
+      return 'Mình không còn thao tác nào để hoàn tác.';
+    }
+    await u.revert();
+    return 'Đã hoàn tác: ${u.label}.';
   }
 
   Future<String> _create(AiCommand c, List<AppTask> tasks, DateTime now) async {
@@ -97,6 +202,10 @@ class CommandHandler {
       recurrenceRule: c.recurrenceRule,
     ));
     await reminders.scheduleForTask(saved);
+    _undo = _Undo(now, 'tạo "$title"', () async {
+      await reminders.cancelForTask(saved);
+      await repo.delete(saved.id);
+    });
 
     final when = formatDateTimeVi(slot.start, now);
     if (slot.adjusted && c.dueDate != null) {
@@ -114,6 +223,7 @@ class CommandHandler {
   Future<String> _update(AiCommand c, List<AppTask> tasks, DateTime now) async {
     final t = _targets(c, tasks);
     if (t.isEmpty) return 'Mình không tìm thấy công việc bạn muốn sửa.';
+    if (t.length > 1 && c.isBatch) return _updateMany(c, t, tasks, now);
     if (t.length > 1) {
       _pending = 'Sửa lịch nhưng khớp nhiều việc: ${t.map((e) => e.title).join(', ')}';
       return 'Có nhiều việc khớp: ${t.map((e) => e.title).join(', ')}. Bạn muốn sửa việc nào?';
@@ -144,18 +254,99 @@ class CommandHandler {
     // Đồng bộ AI ↔ Push: hủy đăng ký cũ, tạo đăng ký mới theo mốc cập nhật.
     await reminders.cancelForTask(old);
     await reminders.scheduleForTask(next);
+    final updated = next;
+    _undo = _Undo(now, 'sửa "${old.title}"', () async {
+      await repo.update(old);
+      await reminders.cancelForTask(updated);
+      await reminders.scheduleForTask(old);
+    });
     return moved
         ? 'Đã dời "${next.title}" sang ${formatDateTimeVi(next.dueDate, now)}.'
         : 'Đã cập nhật "${next.title}".';
   }
 
+  /// Dời / đổi ưu tiên hàng loạt: các việc được xếp lần lượt, không chồng nhau.
+  Future<String> _updateMany(
+      AiCommand c, List<AppTask> targets, List<AppTask> all, DateTime now) async {
+    if (c.dueDate == null && c.priority == null && c.durationMinutes == null) {
+      _pending = 'Sửa hàng loạt ${targets.length} việc nhưng chưa nói đổi gì';
+      return 'Bạn muốn dời ${targets.length} việc này sang lúc nào?';
+    }
+    if (c.dueDate != null &&
+        c.dueDate!.isBefore(now.subtract(const Duration(minutes: 1)))) {
+      _pending = 'Dời ${targets.length} việc nhưng thời điểm nói đã ở quá khứ';
+      return 'Thời điểm đó đã qua rồi. Bạn muốn dời ${targets.length} việc sang lúc nào?';
+    }
+    final ids = targets.map((e) => e.id).toSet();
+    // Lịch cố định = mọi việc không bị dời; việc vừa dời được thêm dần vào.
+    final busy = all.where((x) => !ids.contains(x.id)).toList();
+    final ordered = [...targets]..sort((a, b) => a.dueDate.compareTo(b.dueDate));
+    final moved = <(AppTask, AppTask)>[]; // (bản cũ, bản mới)
+    for (final old in ordered) {
+      var next = old;
+      if (c.dueDate != null) {
+        final slot = scheduler.findSlot(
+          requested: c.dueDate,
+          durationMinutes: c.durationMinutes ?? old.durationMinutes,
+          existing: busy,
+          now: now,
+        );
+        next = next.copyWith(
+          dueDate: slot.start,
+          rescheduleCount: old.rescheduleCount + 1,
+        );
+      }
+      if (c.priority != null) next = next.copyWith(priority: c.priority);
+      if (c.durationMinutes != null) {
+        next = next.copyWith(durationMinutes: c.durationMinutes);
+      }
+      await repo.update(next);
+      await reminders.cancelForTask(old);
+      await reminders.scheduleForTask(next);
+      busy.add(next);
+      moved.add((old, next));
+    }
+    _undo = _Undo(now, 'sửa ${targets.length} việc', () async {
+      for (final (old, next) in moved) {
+        await repo.update(old);
+        await reminders.cancelForTask(next);
+        await reminders.scheduleForTask(old);
+      }
+    });
+    return c.dueDate != null
+        ? 'Đã dời ${targets.length} việc, xếp lần lượt từ ${formatDateTimeVi(c.dueDate!, now)}.'
+        : 'Đã cập nhật ${targets.length} việc.';
+  }
+
   Future<String> _delete(AiCommand c, List<AppTask> tasks) async {
     final t = _targets(c, tasks);
     if (t.isEmpty) return 'Không có công việc nào khớp để xóa.';
+    if (t.length >= _confirmDeleteFrom) {
+      _confirm = _PendingConfirm(clock(), () => _deleteNow(t));
+      final names = t.take(3).map((e) => e.title).join(', ');
+      final more = t.length > 3 ? ' và ${t.length - 3} việc khác' : '';
+      return 'Mình sắp xóa ${t.length} việc: $names$more. Bạn xác nhận nhé?';
+    }
+    return _deleteNow(t);
+  }
+
+  Future<String> _deleteNow(List<AppTask> t) async {
     for (final x in t) {
       await reminders.cancelForTask(x);
       await repo.delete(x.id);
     }
+    _undo = _Undo(
+      clock(),
+      t.length == 1 ? 'xóa "${t.first.title}"' : 'xóa ${t.length} việc',
+      () async {
+        for (final x in t) {
+          final saved = await repo.add(x);
+          try {
+            await reminders.scheduleForTask(saved);
+          } catch (_) {} // việc quá hạn có thể không đặt nhắc được
+        }
+      },
+    );
     return t.length == 1
         ? 'Đã xóa "${t.first.title}".'
         : 'Đã xóa ${t.length} công việc.';
@@ -164,6 +355,7 @@ class CommandHandler {
   Future<String> _complete(AiCommand c, List<AppTask> tasks, DateTime now) async {
     final t = _targets(c, tasks).where((x) => !x.isCompleted).toList();
     if (t.isEmpty) return 'Không có công việc nào cần đánh dấu hoàn thành.';
+    final created = <AppTask>[];
     for (final x in t) {
       await reminders.cancelForTask(x);
       await repo.update(x.copyWith(isCompleted: true, completedAt: now));
@@ -171,27 +363,83 @@ class CommandHandler {
       if (next != null) {
         final saved = await repo.add(next);
         await reminders.scheduleForTask(saved);
+        created.add(saved);
       }
     }
+    _undo = _Undo(now, 'hoàn thành ${t.length} việc', () async {
+      for (final s in created) {
+        await reminders.cancelForTask(s);
+        await repo.delete(s.id);
+      }
+      for (final x in t) {
+        await repo.update(x); // x là bản chưa hoàn thành
+        try {
+          await reminders.scheduleForTask(x);
+        } catch (_) {}
+      }
+    });
     return t.length == 1
         ? 'Đã hoàn thành "${t.first.title}". Làm tốt lắm!'
         : 'Đã đánh dấu hoàn thành ${t.length} công việc.';
   }
 
   String _query(AiCommand c, List<AppTask> tasks, DateTime now) {
+    final filter = c.queryFilter ?? 'all';
+    final hasRange = c.rangeStart != null || c.rangeEnd != null;
     final from = c.rangeStart ?? DateTime(now.year, now.month, now.day);
     final to = c.rangeEnd ?? from.add(const Duration(days: 1));
-    final list = tasks
+
+    String when(AppTask t) => isSameDay(t.dueDate, now)
+        ? formatTimeVi(t.dueDate)
+        : formatDateTimeVi(t.dueDate, now);
+    String describe(List<AppTask> l, {bool withTime = true}) {
+      final shown = l
+          .take(6)
+          .map((t) => withTime ? '${when(t)} ${t.title}' : t.title)
+          .join(', ');
+      final more = l.length > 6 ? ' và ${l.length - 6} việc khác' : '';
+      return '$shown$more';
+    }
+
+    // Việc đã hoàn thành: lọc theo thời điểm hoàn thành.
+    if (filter == 'done') {
+      DateTime at(AppTask t) => t.completedAt ?? t.dueDate;
+      final done = tasks
+          .where((t) =>
+              t.isCompleted && !at(t).isBefore(from) && at(t).isBefore(to))
+          .toList()
+        ..sort((a, b) => at(a).compareTo(at(b)));
+      if (done.isEmpty) return 'Bạn chưa hoàn thành việc nào trong khoảng này.';
+      return 'Bạn đã hoàn thành ${done.length} việc: ${describe(done, withTime: false)}.';
+    }
+
+    // Hỏi "quá hạn" mà không nêu khoảng thời gian → xét mọi việc quá hạn.
+    final noRange = filter == 'overdue' && !hasRange;
+    final inRange = tasks
         .where((t) =>
-            !t.isCompleted && !t.dueDate.isBefore(from) && t.dueDate.isBefore(to))
+            !t.isCompleted &&
+            (noRange || (!t.dueDate.isBefore(from) && t.dueDate.isBefore(to))))
         .toList()
       ..sort((a, b) => a.dueDate.compareTo(b.dueDate));
-    if (list.isEmpty) return 'Bạn không có công việc nào trong khoảng này.';
-    final shown = list
-        .take(8)
-        .map((t) => '${formatTimeVi(t.dueDate)} ${t.title}')
-        .join('; ');
-    final more = list.length > 8 ? ' và ${list.length - 8} việc khác' : '';
-    return 'Bạn có ${list.length} việc: $shown$more.';
+    final overdue = inRange.where((t) => t.isOverdue(now)).toList();
+    final upcoming = inRange.where((t) => !t.isOverdue(now)).toList();
+
+    if (filter == 'overdue') {
+      if (overdue.isEmpty) return 'Bạn không có việc nào quá hạn trong khoảng này.';
+      return 'Bạn có ${overdue.length} việc quá hạn: ${describe(overdue)}.';
+    }
+    if (filter == 'upcoming') {
+      if (upcoming.isEmpty) return 'Bạn không có việc nào sắp tới hạn trong khoảng này.';
+      return 'Bạn có ${upcoming.length} việc sắp tới hạn: ${describe(upcoming)}.';
+    }
+    if (inRange.isEmpty) return 'Bạn không có công việc nào trong khoảng này.';
+    if (overdue.isEmpty) {
+      return 'Bạn có ${upcoming.length} việc sắp tới hạn: ${describe(upcoming)}.';
+    }
+    if (upcoming.isEmpty) {
+      return 'Bạn có ${overdue.length} việc quá hạn: ${describe(overdue)}.';
+    }
+    return 'Bạn có ${overdue.length} việc quá hạn: ${describe(overdue)}. '
+        'Ngoài ra có ${upcoming.length} việc sắp tới hạn: ${describe(upcoming)}.';
   }
 }

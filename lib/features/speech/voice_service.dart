@@ -1,5 +1,5 @@
 import 'dart:async';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
@@ -10,92 +10,219 @@ class VoiceService {
   final _stt = SpeechToText();
   final _tts = FlutterTts();
   bool _ready = false;
-  Completer<String>? _activeListening;
-  Timer? _finishTimer;
-  String _lastRecognized = '';
+  String _localeId = AppConfig.locale;
 
-  void _completeAfter(Duration delay) {
-    final active = _activeListening;
-    if (active == null || active.isCompleted) return;
-    _finishTimer?.cancel();
-    _finishTimer = Timer(delay, () {
-      if (identical(active, _activeListening) && !active.isCompleted) {
-        active.complete(_lastRecognized);
-      }
-    });
-  }
+  // Phiên nghe nhiều đoạn: ghép các đoạn lại, chỉ kết thúc khi người dùng im thật sự.
+  static const _endSilence = Duration(milliseconds: 2500); // im bao lâu thì chốt
+  static const _maxTotal = Duration(seconds: 60);
+  Completer<String>? _session;
+  Timer? _silenceTimer;
+  final _committed = <String>[]; // các đoạn đã chốt
+  String _currentPartial = '';   // đoạn đang nói
+  bool _stopRequested = false;
+  void Function(String)? _onPartial;
+  DateTime _startedAt = DateTime.now();
+
+  String get _fullText =>
+      [..._committed, if (_currentPartial.isNotEmpty) _currentPartial]
+          .join(' ')
+          .trim();
 
   Future<bool> init() async {
     if (_ready) return true;
     _ready = await _stt.initialize(
-      onStatus: (status) {
-        if (status == 'notListening' || status == 'done') {
-          // Android can emit the status before delivering its final result.
-          _completeAfter(const Duration(milliseconds: 1200));
+      onStatus: _onStatus,
+      onError: (e) {
+        // Lỗi "no match"/"timeout" thường xảy ra khi im lặng: tiếp tục nghe,
+        // trừ khi đã hết giờ hoặc người dùng bấm dừng.
+        if (e.errorMsg == 'error_no_match' ||
+            e.errorMsg == 'error_speech_timeout') {
+          _restartOrFinish();
+        } else {
+          _finish();
         }
       },
-      onError: (_) {
-        _completeAfter(const Duration(milliseconds: 300));
-      },
     );
-    await _tts.setLanguage('vi-VN');
-    await _tts.setSpeechRate(0.45);
-    await _tts.setPitch(1.0);
-    await _tts.setVolume(1.0);
-    await _tts.awaitSpeakCompletion(true);
+    if (_ready) {
+      // Chọn đúng locale tiếng Việt mà máy hỗ trợ (vi_VN hoặc vi-VN).
+      final locales = await _stt.locales();
+      final vi = locales.where((l) => l.localeId.toLowerCase().startsWith('vi'));
+      if (vi.isNotEmpty) _localeId = vi.first.localeId;
+    }
+    await _initTts();
     return _ready;
+  }
+
+  Future<void> _initTts() async {
+    // Ưu tiên engine Google TTS (có giọng tiếng Việt rõ nhất trên Android).
+    try {
+      final engines = await _tts.getEngines;
+      if (engines is List && engines.contains('com.google.android.tts')) {
+        await _tts.setEngine('com.google.android.tts');
+      }
+    } catch (_) {}
+
+    // Kiểm tra máy đã có giọng tiếng Việt chưa, rồi ghim giọng đó.
+    try {
+      final ok = await _tts.isLanguageAvailable('vi-VN');
+      if (ok == true) {
+        await _tts.setLanguage('vi-VN');
+      } else {
+        await _tts.setLanguage('vi-VN'); // vẫn thử, nhưng báo để người dùng cài giọng
+        debugPrint('TTS: chưa có giọng vi-VN. '
+            'Cài tại Cài đặt > Ngôn ngữ > Chuyển văn bản thành giọng nói.');
+      }
+      final voices = await _tts.getVoices;
+      if (voices is List) {
+        final viVoices = voices.whereType<Map>().where((v) {
+          final loc = '${v['locale']}'.toLowerCase().replaceAll('_', '-');
+          return loc.startsWith('vi');
+        }).toList();
+        if (viVoices.isNotEmpty) {
+          final v = viVoices.first;
+          await _tts.setVoice({
+            'name': '${v['name']}',
+            'locale': '${v['locale']}',
+          });
+        }
+      }
+    } catch (_) {}
+
+    await _tts.setSpeechRate(0.5); // 0.5 = tốc độ tự nhiên trên Android
+    await _tts.setPitch(1.0);
+    await _tts.setVolume(1.0);       // mức tối đa của app
+    await _tts.awaitSpeakCompletion(true);
   }
 
   bool get isListening => _stt.isListening;
 
-  /// Nghe một câu lệnh; trả về văn bản cuối cùng (rỗng nếu không nghe được).
-  /// [onPartial] nhận văn bản tạm thời để hiển thị trực tiếp.
-  Future<String> listenOnce({void Function(String)? onPartial}) async {
-    if (!await init()) return '';
-    await _tts.stop();
-    if (_stt.isListening) await _stt.stop();
-    final done = Completer<String>();
-    _activeListening = done;
-    _finishTimer?.cancel();
-    _lastRecognized = '';
-    var last = '';
+  void _onStatus(String status) {
+    if (status == 'notListening' || status == 'done') {
+      // Android tự dừng sau 1 câu: chờ chút cho kết quả cuối về rồi nghe tiếp.
+      Future.delayed(const Duration(milliseconds: 400), _restartOrFinish);
+    }
+  }
+
+  void _restartOrFinish() {
+    final s = _session;
+    if (s == null || s.isCompleted) return;
+    final expired = DateTime.now().difference(_startedAt) > _maxTotal;
+    if (_stopRequested || expired) {
+      _finish();
+      return;
+    }
+    if (_stt.isListening) return; // đã tự nghe lại rồi
+    _startSegment();
+  }
+
+  void _finish() {
+    final s = _session;
+    if (s == null || s.isCompleted) return;
+    _silenceTimer?.cancel();
+    s.complete(_fullText);
+  }
+
+  void _armSilenceTimer() {
+    _silenceTimer?.cancel();
+    // Có chữ rồi mà im 2,5 giây liên tục thì mới chốt câu.
+    _silenceTimer = Timer(_endSilence, () async {
+      if (_fullText.isEmpty) return; // chưa nói gì thì cứ chờ
+      _stopRequested = true;
+      await _stt.stop();
+      Future.delayed(const Duration(milliseconds: 500), _finish);
+    });
+  }
+
+  Future<void> _startSegment() async {
+    _currentPartial = '';
     await _stt.listen(
+      onResult: (r) {
+        final words = r.recognizedWords.trim();
+        if (words.isNotEmpty) {
+          _currentPartial = words;
+          _armSilenceTimer();
+        }
+        if (r.finalResult) {
+          // Chốt đoạn này, KHÔNG kết thúc phiên: đợi nghe tiếp.
+          if (_currentPartial.isNotEmpty) {
+            _committed.add(_currentPartial);
+            _currentPartial = '';
+          }
+        }
+        _onPartial?.call(_fullText);
+      },
       listenOptions: SpeechListenOptions(
         partialResults: true,
-        localeId: AppConfig.locale,
+        localeId: _localeId,
         listenFor: const Duration(seconds: 30),
-        pauseFor: const Duration(seconds: 5),
+        pauseFor: const Duration(seconds: 6),
         listenMode: ListenMode.dictation,
         cancelOnError: false,
       ),
-      onResult: (r) {
-        _finishTimer?.cancel();
-        final recognized = r.recognizedWords.trim();
-        if (recognized.isNotEmpty) last = recognized;
-        _lastRecognized = last;
-        onPartial?.call(last);
-        if (r.finalResult && !done.isCompleted) done.complete(last);
-      },
     );
-    final result = await done.future.timeout(
-      const Duration(seconds: 35),
-      onTimeout: () => last,
+  }
+
+  /// Nghe một câu lệnh; ghép nhiều đoạn, chỉ kết thúc khi người dùng im
+  /// ~2,5 giây hoặc bấm dừng. [onPartial] nhận toàn bộ văn bản đang nghe.
+  Future<String> listenOnce({void Function(String)? onPartial}) async {
+    if (!await init()) return '';
+    await _tts.stop();
+    if (_stt.isListening) await _stt.cancel();
+
+    _session = Completer<String>();
+    _committed.clear();
+    _currentPartial = '';
+    _stopRequested = false;
+    _onPartial = onPartial;
+    _startedAt = DateTime.now();
+    _silenceTimer?.cancel();
+
+    await _startSegment();
+    final result = await _session!.future.timeout(
+      _maxTotal + const Duration(seconds: 5),
+      onTimeout: () => _fullText,
     );
-    _finishTimer?.cancel();
-    _activeListening = null;
+    _silenceTimer?.cancel();
+    _session = null;
+    _onPartial = null;
     return result;
   }
 
   Future<void> stopListening() async {
+    _stopRequested = true;
+    _silenceTimer?.cancel();
     await _stt.stop();
-    // Give the platform time to deliver the final recognition result.
-    _completeAfter(const Duration(milliseconds: 1200));
+    // Chờ nền tảng trả nốt kết quả cuối rồi mới chốt.
+    Future.delayed(const Duration(milliseconds: 800), _finish);
+  }
+
+  /// Chuẩn hóa văn bản trước khi đọc: bỏ ký tự gây đọc sai, giữ thuần tiếng Việt.
+  String _cleanForSpeech(String text) {
+    var s = text;
+    s = s.replaceAll(RegExp(r'https?://\S+'), '');
+    s = s.replaceAll(RegExp(r'[*_#`>~|]'), '');
+    s = s.replaceAll(RegExp(r'["“”\x27]'), '');
+    s = s.replaceAll(';', ',');
+    // "9h30" -> "9 giờ 30", "9h" -> "9 giờ"
+    s = s.replaceAllMapped(RegExp(r'(\d{1,2})h(\d{2})?\b'), (m) {
+      final min = m.group(2);
+      return min == null ? '${m[1]} giờ' : '${m[1]} giờ ${int.parse(min)}';
+    });
+    // "12/10" -> "12 tháng 10" (ngày/tháng)
+    s = s.replaceAllMapped(RegExp(r'\b(\d{1,2})/(\d{1,2})\b'),
+        (m) => '${m[1]} tháng ${m[2]}');
+    s = s.replaceAll('%', ' phần trăm');
+    s = s.replaceAll(RegExp(r'\s+'), ' ');
+    return s.trim();
   }
 
   Future<void> speak(String text) async {
-    if (text.trim().isEmpty) return;
+    final clean = _cleanForSpeech(text);
+    if (clean.isEmpty) return;
     await _tts.stop();
-    await _tts.speak(text.trim());
+    await _tts.setLanguage('vi-VN'); // ép lại mỗi lần, tránh bị engine tự đổi về tiếng Anh
+    await _tts.setVolume(1.0);
+    await _tts.speak(clean);
   }
 
   Future<void> stopSpeaking() => _tts.stop();

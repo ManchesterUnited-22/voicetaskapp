@@ -2,7 +2,7 @@ import '../../../core/config.dart';
 import '../../ai_engine/data/gemini_service.dart';
 import '../../tasks/domain/task_repository.dart';
 import '../domain/performance_metrics.dart';
-
+import '../../tasks/domain/app_task.dart';
 class CoachReport {
   final PerformanceMetrics metrics;
   final String feedback;
@@ -45,7 +45,7 @@ class PerformanceService {
     final n = now ?? DateTime.now();
     final p = periods.containsKey(period) ? period : 'week';
     final (from, to) = rangeFor(p, n);
-    final tasks = await repo.getBetween(from, to);
+    final tasks = AppConfig.demoPerformance ? _demoTasks(n) : await repo.getBetween(from, to);
     final metrics = calculator.compute(tasks, n);
 
     if (!metrics.hasEnoughData) {
@@ -63,13 +63,15 @@ class PerformanceService {
     } catch (_) {
       feedback = _fallback(metrics, periods[p]!);
     }
-    await repo.saveAnalytics({
-      'period': p,
-      'completionRate': metrics.completionRate,
-      'overdueRate': metrics.overdueRate,
-      'peakProductiveHours': metrics.peakProductiveHours ?? '',
-      'aiFeedbackSummary': feedback,
-    });
+        if (!AppConfig.demoPerformance) {
+      await repo.saveAnalytics({
+        'period': p,
+        'completionRate': metrics.completionRate,
+        'overdueRate': metrics.overdueRate,
+        'peakProductiveHours': metrics.peakProductiveHours ?? '',
+        'aiFeedbackSummary': feedback,
+      });
+    }
     return CoachReport(metrics, feedback, true);
   }
 
@@ -80,6 +82,7 @@ class PerformanceService {
     DateTime? now,
   }) async {
     final n = now ?? DateTime.now();
+        if (AppConfig.demoPerformance) return null; // không gửi push giả
     if (n.hour < AppConfig.dailyCoachHour) return null;
     final last = await repo.getLastDailyCoach();
     if (last != null &&
@@ -93,7 +96,41 @@ class PerformanceService {
     await repo.setLastDailyCoach(n);
     return r.feedback;
   }
+    /// Dữ liệu mẫu trải 5 ngày gần nhất, dùng chung cho mọi kỳ (ngày/tuần/tháng/năm).
+  List<AppTask> _demoTasks(DateTime n) {
+    var i = 0;
+    AppTask t(int daysAgo, int hour, String title,
+        {int? doneAfterMin, int resched = 0}) {
+      final due = DateTime(n.year, n.month, n.day - daysAgo, hour);
+      return AppTask(
+        id: 'demo${i++}',
+        title: title,
+        dueDate: due,
+        priority: Priority.medium,
+        notificationId: 9000 + i,
+        createdAt: due.subtract(const Duration(days: 1)),
+        isCompleted: doneAfterMin != null,
+        completedAt:
+            doneAfterMin == null ? null : due.add(Duration(minutes: doneAfterMin)),
+        rescheduleCount: resched,
+      );
+    }
 
+    return [
+      t(4, 8, 'Họp nhóm đồ án', doneAfterMin: -10),
+      t(4, 14, 'Viết báo cáo thực tập', doneAfterMin: 90, resched: 1),
+      t(3, 9, 'Học API Gemini', doneAfterMin: -5),
+      t(3, 15, 'Làm bài tập đồ họa', doneAfterMin: 120, resched: 1),
+      t(3, 20, 'Ôn tiếng Anh', doneAfterMin: -15),
+      t(2, 8, 'Họp dự án FPT', doneAfterMin: -20),
+      t(2, 9, 'Sửa lỗi voice chat', doneAfterMin: 0),
+      t(2, 14, 'Nộp báo cáo tuần', resched: 2), // quá hạn, chưa xong
+      t(1, 9, 'Test chức năng nhắc việc', doneAfterMin: -5),
+      t(1, 15, 'Cập nhật slide', doneAfterMin: 75),
+      t(0, 8, 'Tập thể dục', doneAfterMin: -10),
+      t(0, 22, 'Chuẩn bị bài mai'), // sắp tới hạn
+    ];
+  }
   String _fallback(PerformanceMetrics m, String label) {
     final sb = StringBuffer(
         '$label bạn hoàn thành đúng hạn ${m.completionRate.round()}% công việc');

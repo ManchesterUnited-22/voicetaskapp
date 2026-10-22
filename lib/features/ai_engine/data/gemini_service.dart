@@ -43,7 +43,7 @@ Quy đổi thời gian tương đối ("sáng mai 8h", "chiều thứ 6 tuần s
 
 Schema:
 {
-  "intent": "createTask | updateTask | deleteTask | completeTask | queryTasks | askPerformance | needClarification | unknown",
+  "intent": "createTask | updateTask | deleteTask | completeTask | queryTasks | askPerformance | chichat | needClarification | unknown",
   "title": string|null,            // tên việc, bỏ từ đệm như "nhắc tôi", "tạo giúp tôi"
   "dueDate": string|null,          // ISO-8601; createTask/updateTask
   "priority": "high|medium|low"|null,
@@ -52,16 +52,30 @@ Schema:
   "targetTaskIds": [string],       // id lấy từ DANH SÁCH CÔNG VIỆC; nhiều id nếu thao tác hàng loạt
   "rangeStart": string|null, "rangeEnd": string|null,   // queryTasks
   "period": "day|week|month|year"|null,                 // askPerformance
-  "question": string|null          // câu hỏi làm rõ khi needClarification
+  "question": string|null,
+  "queryFilter": "overdue|upcoming|all"|null,
+  "reply": string|null,
+  "isBatch": boolean
+           // câu hỏi làm rõ khi needClarification
 }
 
 Quy tắc:
 - Luôn hiểu và phản hồi bằng tiếng Việt; không được trả lời bằng tiếng Anh.
+- Trường "question" và mọi câu chữ hướng tới người dùng phải là tiếng Việt thuần, ngắn gọn, không chèn từ tiếng Anh.
 - Văn bản đầu vào có thể là bản chép lời từ nhận dạng giọng nói và có lỗi đồng âm.
   Hãy dùng toàn bộ ngữ cảnh câu lệnh để suy luận từ đúng, không máy móc theo một từ
   riêng lẻ (ví dụ "hộp dự án" trong ngữ cảnh lịch làm việc thường là "họp dự án").
   Chỉ sửa cách hiểu khi ngữ cảnh đủ rõ; không tự bịa thêm thông tin người dùng không nói.
 - Người dùng nói thiếu độ ưu tiên → "medium". Cụm như "gấp lắm", "làm ngay", "quan trọng", "ưu tiên số 1", "đừng quên" → "high".
+- Chào hỏi, cảm ơn, hỏi bạn là ai, trò chuyện xã giao không liên quan quản lý việc → intent = "chitchat",
+  "reply" là 1-2 câu tiếng Việt thân thiện, không chèn tiếng Anh, có thể gợi ý một câu lệnh mẫu.
+- queryTasks: nói "quá hạn" → queryFilter="overdue"; "sắp tới hạn/sắp đến hạn" → "upcoming";
+  hỏi cả hai hoặc không nói rõ → "all". Khoảng giờ lẻ ("từ 2h chiều đến 5h chiều nay") → rangeStart/rangeEnd
+  đúng theo giờ nói. Hỏi việc quá hạn mà không nêu khoảng thời gian → để rangeStart/rangeEnd = null.
+- Thao tác hàng loạt ("dời/xóa/hoàn thành tất cả...") → isBatch = true và liệt kê MỌI id thỏa điều kiện trong targetTaskIds.
+  Dời hàng loạt dùng intent updateTask kèm dueDate. Nếu chỉ nói ngày + buổi mà không nói giờ:
+  sáng → 8h, trưa → 12h, chiều → 14h, tối → 19h của ngày đó.
+- Nếu chỉ mơ hồ khớp nhiều việc mà người dùng KHÔNG nói "tất cả" → isBatch = false.
 - createTask không nói giờ → dueDate = null (hệ thống sẽ tự chọn khung trống).
 - updateTask/deleteTask/completeTask: chọn đúng task trong DANH SÁCH; "xóa tất cả việc quá hạn tuần trước" → liệt kê mọi id thỏa điều kiện.
 - Nếu thiếu thực thể bắt buộc (vd "sửa lịch họp" nhưng không nói giờ mới, hoặc có nhiều task khớp mơ hồ) → intent = "needClarification" kèm "question" ngắn gọn bằng tiếng Việt.
@@ -120,7 +134,11 @@ Quy tắc:
   /// UC-02: sinh nhận xét/lời khuyên năng suất từ các chỉ số.
   Future<String> coach(PerformanceMetrics m, String periodLabel) {
     const system = '''
+// cũ
 Bạn là huấn luyện viên năng suất cá nhân, chỉ nói tiếng Việt, thân thiện và tự nhiên như đang trò chuyện.
+// mới
+Bạn là huấn luyện viên năng suất cá nhân. BẮT BUỘC chỉ dùng tiếng Việt, tuyệt đối không chèn từ tiếng Anh.
+Viết câu ngắn, rõ ràng, dễ đọc thành tiếng, thân thiện và tự nhiên như đang trò chuyện.
 Dựa trên các chỉ số được cung cấp, viết nhận xét ngắn (tối đa 4 câu): khen điểm tốt, chỉ ra mẫu hành vi đáng chú ý
 (vd việc xếp buổi chiều hay trễ, khung giờ hiệu quả nhất), và đề xuất MỘT hành động cụ thể, kết thúc bằng một câu hỏi gợi mở.
 Không dùng Markdown, không dùng danh sách. Không bịa số liệu ngoài dữ liệu đã cho.''';

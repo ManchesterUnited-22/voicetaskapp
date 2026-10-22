@@ -7,8 +7,10 @@ enum Intent {
   completeTask,
   queryTasks,
   askPerformance,
+  chitchat,
   needClarification,
   unknown,
+
 }
 
 Intent intentFromString(String? s) => Intent.values.firstWhere(
@@ -44,7 +46,14 @@ class AiCommand {
 
   /// day | week | month | year — cho askPerformance.
   final String? period;
+    /// overdue | upcoming | all — cho queryTasks.
+  final String? queryFilter;
 
+  /// Câu trả lời xã giao khi intent = chitchat.
+  final String? reply;
+
+  /// true khi người dùng nói rõ "tất cả / hết / toàn bộ" (thao tác hàng loạt).
+  final bool isBatch;
   /// Câu hỏi làm rõ khi intent = needClarification.
   final String? question;
 
@@ -59,6 +68,9 @@ class AiCommand {
     this.rangeStart,
     this.rangeEnd,
     this.period,
+    this.queryFilter,
+    this.reply,
+    this.isBatch = false,
     this.question,
   });
 
@@ -80,6 +92,9 @@ class AiCommand {
       rangeEnd: _dt(j['rangeEnd']),
       period: j['period'] as String?,
       question: j['question'] as String?,
+            queryFilter: j['queryFilter'] as String?,
+      reply: (j['reply'] as String?)?.trim(),
+      isBatch: j['isBatch'] == true,
     );
   }
 }

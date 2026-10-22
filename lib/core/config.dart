@@ -6,7 +6,9 @@ class AppConfig {
   /// nên khóa API không nằm trong app. --dart-define=GEMINI_PROXY_URL=https://...
   static const geminiProxyUrl = String.fromEnvironment('GEMINI_PROXY_URL');
   static const geminiModel = 'gemini-2.5-flash';
-
+    /// CHỈ ĐỂ CHỤP ẢNH BÁO CÁO: dùng dữ liệu mẫu cho phần đánh giá hiệu suất.
+  /// Bật: flutter run --dart-define=DEMO_PERFORMANCE=true
+  static const demoPerformance = bool.fromEnvironment('DEMO_PERFORMANCE');
   /// Giờ làm việc dùng cho thuật toán Auto-Scheduling.
   static const workDayStartHour = 7;
   static const workDayEndHour = 22;
