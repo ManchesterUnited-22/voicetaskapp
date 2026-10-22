@@ -1,0 +1,3 @@
+<!-- Dán vào ios/Runner/Info.plist, trong <dict> -->
+<key>NSMicrophoneUsageDescription</key><string>Dùng micro để nghe lệnh giọng nói</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Chuyển giọng nói thành văn bản</string>

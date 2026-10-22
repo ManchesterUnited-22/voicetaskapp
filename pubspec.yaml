@@ -1,0 +1,33 @@
+name: voice_task_app
+description: Ứng dụng quản lý công việc tích hợp AI tương tác giọng nói (Voice-First, Gemini, Firebase).
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.1
+  cloud_firestore: ^5.4.4
+  google_sign_in: ^6.2.2
+  provider: ^6.1.2
+  speech_to_text: ^7.0.0
+  flutter_tts: ^4.1.0
+  flutter_local_notifications: ^18.0.1
+  timezone: ^0.10.0
+  flutter_timezone: ^3.0.1
+  http: ^1.2.2
+  intl: any
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

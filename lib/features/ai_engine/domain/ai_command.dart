@@ -1,0 +1,85 @@
+import '../../tasks/domain/app_task.dart';
+
+enum Intent {
+  createTask,
+  updateTask,
+  deleteTask,
+  completeTask,
+  queryTasks,
+  askPerformance,
+  needClarification,
+  unknown,
+}
+
+Intent intentFromString(String? s) => Intent.values.firstWhere(
+      (i) => i.name == s,
+      orElse: () => Intent.unknown,
+    );
+
+/// Bộ phân tích câu lệnh (Gemini ở runtime, giả lập khi kiểm thử).
+abstract class CommandParser {
+  Future<AiCommand> parse({
+    required String text,
+    required List<AppTask> tasks,
+    DateTime? now,
+    String? pendingContext,
+  });
+}
+
+/// Kết quả JSON do Gemini trả về (Bảng 1, bước 4-5): {intent, title, dueDate, priority, ...}
+class AiCommand {
+  final Intent intent;
+  final String? title;
+  final DateTime? dueDate;
+  final Priority? priority;
+  final int? durationMinutes;
+  final String? recurrenceRule;
+
+  /// Id các task được nhắm tới (sửa/xóa/hoàn thành, kể cả hàng loạt).
+  final List<String> targetTaskIds;
+
+  /// Khoảng thời gian cho queryTasks.
+  final DateTime? rangeStart;
+  final DateTime? rangeEnd;
+
+  /// day | week | month | year — cho askPerformance.
+  final String? period;
+
+  /// Câu hỏi làm rõ khi intent = needClarification.
+  final String? question;
+
+  const AiCommand({
+    required this.intent,
+    this.title,
+    this.dueDate,
+    this.priority,
+    this.durationMinutes,
+    this.recurrenceRule,
+    this.targetTaskIds = const [],
+    this.rangeStart,
+    this.rangeEnd,
+    this.period,
+    this.question,
+  });
+
+  static DateTime? _dt(dynamic v) =>
+      v is String && v.isNotEmpty ? DateTime.tryParse(v)?.toLocal() : null;
+
+  factory AiCommand.fromJson(Map<String, dynamic> j) {
+    final pr = j['priority'] as String?;
+    return AiCommand(
+      intent: intentFromString(j['intent'] as String?),
+      title: (j['title'] as String?)?.trim(),
+      dueDate: _dt(j['dueDate']),
+      priority: pr == null ? null : priorityFromString(pr),
+      durationMinutes: (j['durationMinutes'] as num?)?.toInt(),
+      recurrenceRule: j['recurrenceRule'] as String?,
+      targetTaskIds:
+          ((j['targetTaskIds'] as List?) ?? const []).whereType<String>().toList(),
+      rangeStart: _dt(j['rangeStart']),
+      rangeEnd: _dt(j['rangeEnd']),
+      period: j['period'] as String?,
+      question: j['question'] as String?,
+    );
+  }
+}
