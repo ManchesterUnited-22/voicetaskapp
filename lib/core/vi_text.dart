@@ -73,45 +73,125 @@ const perfPeriodLabel = <String, String>{
   'year': 'năm nay',
 };
 
+enum PerfIssue {
+  /// Nghe được kỳ cụ thể (day | week | month | year).
+  none,
+
+  /// Có nói "hiệu suất" nhưng KHÔNG nghe thấy kỳ nào → phải hỏi lại, không tự đoán.
+  missing,
+
+  /// Có nói kỳ mà app không hỗ trợ ("tháng trước", "hôm qua", "tháng 9",
+  /// "từ ngày 1 đến ngày 5"...) → không được tự đổi thành kỳ hiện tại.
+  unsupported,
+}
+
 class PerfMatch {
-  final String period; // day | week | month | year
+  final String? period; // day | week | month | year (null nếu issue != none)
 
   /// true: từ chỉ kỳ nghe đúng chuẩn. false: chỉ là nghe gần giống
   /// (vd "thắng" thay vì "tháng") → phải hỏi lại người dùng.
   final bool exact;
-  const PerfMatch(this.period, this.exact);
+  final PerfIssue issue;
+  const PerfMatch(this.period, this.exact) : issue = PerfIssue.none;
+  const PerfMatch.missing()
+      : period = null,
+        exact = false,
+        issue = PerfIssue.missing;
+  const PerfMatch.unsupported()
+      : period = null,
+        exact = false,
+        issue = PerfIssue.unsupported;
 }
 
-/// Nhận ra câu hỏi "đánh giá hiệu suất <kỳ>". Trả về null nếu không phải
-/// (hoặc không có từ chỉ kỳ → để Gemini xử lý).
-PerfMatch? matchPerformance(String text) {
-  final t = text
-      .toLowerCase()
-      .replaceAll(RegExp(r'[^\p{L}\p{M}\p{N}\s]', unicode: true), ' ')
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
-  final m = RegExp(r'(hiệu|năng) (suất|xuất|sút|sức|suốt)').firstMatch(t);
-  if (m == null) return null;
+const _exactPeriod = <String, String>{
+  'tháng': 'month', 'tuần': 'week', 'năm': 'year', 'hôm': 'day', 'ngày': 'day',
+};
+const _nearPeriod = <String, String>{
+  'thắng': 'month', 'thấp': 'month', 'thán': 'month', 'thang': 'month',
+  'thăng': 'month', 'thản': 'month',
+  'tuấn': 'week', 'tuân': 'week', 'tuận': 'week',
+  'nằm': 'year', 'nấm': 'year', 'nắm': 'year',
+};
 
-  const exact = <String, String>{
-    'tháng': 'month', 'tuần': 'week', 'năm': 'year', 'hôm': 'day', 'ngày': 'day',
-  };
-  const near = <String, String>{
-    'thắng': 'month', 'thấp': 'month', 'thán': 'month', 'thang': 'month',
-    'thăng': 'month', 'thản': 'month',
-    'tuấn': 'week', 'tuân': 'week', 'tuận': 'week',
-    'nằm': 'year', 'nấm': 'year', 'nắm': 'year',
-  };
-  final tail = t.substring(m.end).trim();
-  if (tail.isNotEmpty) {
-    for (final w in tail.split(' ').take(5)) {
-      if (exact[w] != null) return PerfMatch(exact[w]!, true);
-      if (near[w] != null) return PerfMatch(near[w]!, false);
+/// Từ làm lệch kỳ: "tuần TRƯỚC", "hôm QUA", "tháng NGOÁI", "tuần TỚI"...
+const _shiftWords = <String>{
+  'trước', 'qua', 'rồi', 'sau', 'ngoái', 'kia', 'mai', 'kế', 'tới', 'vừa',
+  'từ', 'đến',
+};
+
+/// Số đứng ngay trước từ chỉ kỳ: "HAI tuần", "VÀI tháng".
+const _countWords = <String>{
+  'hai', 'ba', 'bốn', 'sáu', 'bảy', 'tám', 'chín', 'mười', 'mấy', 'vài',
+};
+
+final _perfRe = RegExp(r'(hiệu|năng) (suất|xuất|sút|sức|suốt)');
+final _digitRe = RegExp(r'\d');
+
+String _normVi(String text) => text
+    .toLowerCase()
+    .replaceAll(RegExp(r'[^\p{L}\p{M}\p{N}\s]', unicode: true), ' ')
+    .replaceAll(RegExp(r'\s+'), ' ')
+    .trim();
+
+/// Câu có chứa kỳ mà app KHÔNG hỗ trợ (số/ngày cụ thể, tuần trước, hôm qua, khoảng từ-đến...).
+/// App chỉ đánh giá TRỌN kỳ hiện tại: hôm nay, tuần này, tháng này, năm nay.
+bool _outOfScope(List<String> words) {
+  if (words.any(_digitRe.hasMatch)) return true;
+  for (var i = 0; i < words.length; i++) {
+    final w = words[i];
+    if (_shiftWords.contains(w)) return true;
+    // "hôm" chỉ hợp lệ khi đi với "nay".
+    if (w == 'hôm' && (i + 1 >= words.length || words[i + 1] != 'nay')) {
+      // "ngày hôm nay" vẫn hợp lệ vì đã xét "hôm nay"; còn lại ("hôm qua"...) là ngoài phạm vi.
+      return true;
+    }
+    final isPeriod = _exactPeriod.containsKey(w) || _nearPeriod.containsKey(w);
+    if (isPeriod && i > 0 && _countWords.contains(words[i - 1])) return true;
+  }
+  return false;
+}
+
+PerfMatch? _findPeriod(Iterable<String> words, {required bool allowNear}) {
+  for (final w in words) {
+    if (_exactPeriod[w] != null) return PerfMatch(_exactPeriod[w]!, true);
+    if (allowNear && _nearPeriod[w] != null) {
+      return PerfMatch(_nearPeriod[w]!, false);
     }
   }
-  // Nói đảo ("tháng này đánh giá hiệu suất"): chỉ tin các từ viết đúng.
-  for (final w in t.substring(0, m.start).split(' ')) {
-    if (exact[w] != null) return PerfMatch(exact[w]!, true);
-  }
   return null;
+}
+
+/// Nhận ra câu hỏi "đánh giá hiệu suất <kỳ>".
+/// - null: câu không nói về hiệu suất (để Gemini xử lý).
+/// - issue == missing: có nói hiệu suất nhưng chưa nghe thấy kỳ → phải hỏi lại.
+/// - issue == unsupported: kỳ ngoài 4 kỳ hỗ trợ → báo và hỏi lại.
+PerfMatch? matchPerformance(String text) {
+  final t = _normVi(text);
+  final m = _perfRe.firstMatch(t);
+  if (m == null) return null;
+  final words = t.split(' ');
+  if (_outOfScope(words)) return const PerfMatch.unsupported();
+
+  final tail = t.substring(m.end).trim();
+  if (tail.isNotEmpty) {
+    final hit = _findPeriod(tail.split(' ').take(5), allowNear: true);
+    if (hit != null) return hit;
+  }
+  // Nói đảo ("tháng này đánh giá hiệu suất"): chỉ tin các từ viết đúng.
+  final head = t.substring(0, m.start).trim();
+  if (head.isNotEmpty) {
+    final hit = _findPeriod(head.split(' '), allowNear: false);
+    if (hit != null) return hit;
+  }
+  return const PerfMatch.missing();
+}
+
+/// Nhận ra kỳ trong CÂU TRẢ LỜI cho câu hỏi "bạn muốn xem kỳ nào?" (không cần nói lại "hiệu suất").
+/// Trả về null nếu câu trả lời không nhắc kỳ nào (coi là lệnh mới).
+PerfMatch? matchPeriodAnswer(String text) {
+  final t = _normVi(text);
+  if (t.isEmpty) return null;
+  final words = t.split(' ');
+  if (_outOfScope(words)) return const PerfMatch.unsupported();
+  return _findPeriod(words.take(5), allowNear: true);
 }

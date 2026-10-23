@@ -159,4 +159,10 @@ class DemoTaskRepository implements TaskRepository {
 
   @override
   Future<void> saveAnalytics(Map<String, dynamic> data) async {}
+  @override
+Future<void> saveActivity(Map<String, dynamic> data) async {}
+@override
+Future<void> markActivityUndone(String id) async {}
+@override
+Future<List<Map<String, dynamic>>> loadActivity({int limit = 30}) async => [];
 }

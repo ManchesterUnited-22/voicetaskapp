@@ -91,4 +91,27 @@ class FirestoreTaskRepository implements TaskRepository {
         ...data,
         'createdAt': FieldValue.serverTimestamp(),
       });
+  CollectionReference<Map<String, dynamic>> get _activity =>
+    _user.collection('activity_logs');
+
+@override
+Future<void> saveActivity(Map<String, dynamic> data) =>
+    _activity.doc(data['id'] as String).set({
+      ...data,
+      'at': Timestamp.fromDate(data['at'] as DateTime),
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+
+@override
+Future<void> markActivityUndone(String id) =>
+    _activity.doc(id).update({'undone': true});
+
+@override
+Future<List<Map<String, dynamic>>> loadActivity({int limit = 30}) async {
+  final s = await _activity.orderBy('at', descending: true).limit(limit).get();
+  return s.docs.map((d) {
+    final m = d.data();
+    return {...m, 'id': d.id, 'at': (m['at'] as Timestamp).toDate()};
+  }).toList();
+}
 }

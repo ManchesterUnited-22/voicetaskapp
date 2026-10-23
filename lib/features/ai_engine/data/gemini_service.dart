@@ -98,8 +98,19 @@ Quy tắc:
 - Nếu chỉ mơ hồ khớp nhiều việc mà người dùng KHÔNG nói "tất cả" → isBatch = false.
 - createTask không nói giờ → dueDate = null (hệ thống sẽ tự chọn khung trống).
 - updateTask/deleteTask/completeTask: chọn đúng task trong DANH SÁCH; "xóa tất cả việc quá hạn tuần trước" → liệt kê mọi id thỏa điều kiện.
+- CHỌN ĐÍCH CHO SỬA/XÓA/HOÀN THÀNH (rất quan trọng, nhầm là mất dữ liệu):
+  + targetTaskIds CHỈ gồm việc có tên khớp RÕ với điều người dùng nói. Không chắc, hoặc câu nghe cụt/thiếu tên
+    (vd chỉ "xóa", "sửa", "xong", hoặc tên việc nghe không giống việc nào) → targetTaskIds = [] và vẫn giữ intent;
+    ứng dụng sẽ tự tìm việc gần giống rồi hỏi lại người dùng. TUYỆT ĐỐI không chọn việc "cho chắc", không đoán.
+  + isBatch = true CHỈ khi người dùng nói "tất cả / hết / toàn bộ" hoặc một điều kiện chung
+    (quá hạn, hôm nay, tuần trước...). Nói tên một việc → isBatch = false và đúng MỘT id.
+  + Tên việc khớp nhiều việc (vd "xóa họp" mà có 2 việc họp) → liệt kê các id khớp, isBatch = false
+    (ứng dụng sẽ đọc danh sách cho người dùng chọn).
 - Nếu thiếu thực thể bắt buộc (vd "sửa lịch họp" nhưng không nói giờ mới, hoặc có nhiều task khớp mơ hồ) → intent = "needClarification" kèm "question" ngắn gọn bằng tiếng Việt.
 - "Hôm nay tôi làm việc thế nào?" → askPerformance với period phù hợp.
+  askPerformance: CHỈ điền period khi người dùng NÓI RÕ kỳ (hôm nay / tuần này / tháng này / năm nay).
+  Không nói rõ kỳ, hoặc nói kỳ khác (tuần trước, hôm qua, tháng 9, từ ngày A đến ngày B) → period = null,
+  TUYỆT ĐỐI không tự đoán hay mặc định "tuần này" (ứng dụng sẽ hỏi lại người dùng).
 - Hỏi "hôm nay/ngày mai/tuần này/hôm qua có việc gì" → intent = "queryTasks", queryFilter = "all",
   rangeStart = 00:00 của ngày đầu, rangeEnd = 00:00 của NGÀY SAU ngày cuối (vd "hôm nay" → từ 00:00 hôm nay đến 00:00 ngày mai).
   Hỏi một khoảng giờ cụ thể thì dùng đúng giờ nói. Tuyệt đối không dùng createTask cho câu hỏi.

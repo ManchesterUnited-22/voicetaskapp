@@ -43,6 +43,13 @@ class FakeRepo implements TaskRepository {
   @override
   Future<void> logVoice({required String rawText, required String intent}) async =>
       logs.add(intent);
+  final activity = <Map<String, dynamic>>[];
+  @override
+  Future<void> saveActivity(Map<String, dynamic> data) async => activity.add(data);
+  @override
+  Future<void> markActivityUndone(String id) async {}
+  @override
+  Future<List<Map<String, dynamic>>> loadActivity({int limit = 30}) async => [];
   DateTime? lastCoach;
   @override
   Future<DateTime?> getLastDailyCoach() async => lastCoach;
@@ -196,23 +203,130 @@ void main() {
     expect(next.dueDate, DateTime(2026, 10, 22, 8));
   });
 
-  test('deleteTask hàng loạt', () async {
-    final h = build([
-      const AiCommand(intent: Intent.deleteTask, targetTaskIds: ['id0', 'id1']),
-    ]);
-    for (final n in ['x', 'y', 'z']) {
-      await repo.add(AppTask(
+  Future<AppTask> addTask(String title, DateTime due, {int nid = 1}) =>
+      repo.add(AppTask(
         id: '',
-        title: n,
-        dueDate: DateTime(2026, 10, 10),
+        title: title,
+        dueDate: due,
         priority: Priority.low,
-        notificationId: 2,
+        notificationId: nid,
         createdAt: now,
       ));
+
+  test('deleteTask hàng loạt: đọc lại danh sách, chờ xác nhận rồi mới xóa', () async {
+    final h = build([
+      const AiCommand(
+          intent: Intent.deleteTask,
+          targetTaskIds: ['id0', 'id1'],
+          isBatch: true),
+    ]);
+    for (final n in ['x', 'y', 'z']) {
+      await addTask(n, DateTime(2026, 10, 10));
     }
-    final reply = await h.handle('xóa tất cả việc quá hạn');
-    expect(reply, 'Đã xóa 2 công việc.');
+    final ask = await h.handle('xóa tất cả việc quá hạn');
+    expect(ask, contains('xác nhận'));
+    expect(repo.store.length, 3); // chưa xóa gì
+    expect(await h.handle('có'), contains('Đã xóa 2 công việc'));
     expect(repo.store.keys, ['id2']);
+  });
+
+  test('xóa MỘT việc cũng đọc lại tên + giờ và chờ xác nhận', () async {
+    final h = build([
+      const AiCommand(intent: Intent.deleteTask, targetTaskIds: ['id0']),
+    ]);
+    await addTask('Họp dự án FPT', DateTime(2026, 10, 22, 9));
+    final ask = await h.handle('xóa họp dự án');
+    expect(ask, contains('Họp dự án FPT'));
+    expect(ask, contains('xác nhận'));
+    expect(repo.store.length, 1);
+    expect(await h.handle('không'), contains('chưa xóa'));
+    expect(repo.store.length, 1);
+  });
+
+  test('xóa: Gemini không chọn được việc → tìm gần đúng theo tên rồi hỏi lại', () async {
+    final h = build([
+      const AiCommand(intent: Intent.deleteTask), // targetTaskIds rỗng
+    ]);
+    await addTask('Họp dự án FPT', DateTime(2026, 10, 22, 9));
+    await addTask('Đá bóng', DateTime(2026, 10, 22, 17), nid: 2);
+    final ask = await h.handle('xóa hộp dự án'); // nghe sai "họp" → "hộp"
+    expect(ask, contains('Họp dự án FPT'));
+    expect(ask, isNot(contains('Đá bóng')));
+    expect(repo.store.length, 2);
+    expect(h.awaitingConfirmation, true);
+    expect(await h.handle('đúng'), contains('Đã xóa'));
+    expect(repo.store.values.map((t) => t.title), ['Đá bóng']);
+  });
+
+  test('xóa cụt (không có tên việc) → hỏi lại, không xóa gì', () async {
+    final h = build([
+      const AiCommand(intent: Intent.deleteTask),
+    ]);
+    await addTask('Họp dự án FPT', DateTime(2026, 10, 22, 9));
+    final ask = await h.handle('xóa');
+    expect(ask, contains('tên việc'));
+    expect(repo.store.length, 1);
+    expect(h.awaitingClarification, true);
+  });
+
+  test('xóa khớp nhiều việc (không nói "tất cả") → bắt chọn, không xóa hàng loạt', () async {
+    final h = build([
+      const AiCommand(
+          intent: Intent.deleteTask, targetTaskIds: ['id0', 'id1']),
+    ]);
+    await addTask('Họp dự án', DateTime(2026, 10, 22, 9));
+    await addTask('Họp phụ huynh', DateTime(2026, 10, 22, 15), nid: 2);
+    final ask = await h.handle('xóa họp');
+    expect(ask, contains('1.'));
+    expect(ask, contains('2.'));
+    expect(repo.store.length, 2);
+    // chọn "cái thứ hai" → vẫn hỏi xác nhận xóa đúng việc đó
+    final confirm = await h.handle('cái thứ hai');
+    expect(confirm, contains('Họp phụ huynh'));
+    expect(repo.store.length, 2);
+    expect(await h.handle('có'), contains('Đã xóa "Họp phụ huynh"'));
+    expect(repo.store.values.map((t) => t.title), ['Họp dự án']);
+  });
+
+  test('sửa/hoàn thành việc không khớp điều người dùng nói → hỏi "có phải...?"', () async {
+    final h = build([
+      const AiCommand(intent: Intent.completeTask, targetTaskIds: ['id0']),
+    ]);
+    await addTask('Đá bóng', DateTime(2026, 10, 22, 17));
+    final ask = await h.handle('xong báo cáo tuần'); // Gemini chọn nhầm id0
+    expect(ask, contains('Có phải'));
+    expect(repo.store['id0']!.isCompleted, false);
+    expect(await h.handle('không'), contains('chưa hoàn thành'));
+    expect(repo.store['id0']!.isCompleted, false);
+  });
+
+  test('sửa chưa nói đổi gì → hỏi, không cập nhật rỗng', () async {
+    final h = build([
+      const AiCommand(intent: Intent.updateTask, targetTaskIds: ['id0']),
+    ]);
+    await addTask('Họp dự án', DateTime(2026, 10, 22, 9));
+    final ask = await h.handle('sửa họp dự án');
+    expect(ask, contains('thế nào'));
+    expect(repo.store['id0']!.rescheduleCount, 0);
+  });
+
+  test('tạo trùng (cùng tên, cùng ngày) → hỏi trước khi tạo thêm', () async {
+    final h = build([
+      AiCommand(
+          intent: Intent.createTask,
+          title: 'Họp dự án',
+          dueDate: DateTime(2026, 10, 22, 9)),
+      AiCommand(
+          intent: Intent.createTask,
+          title: 'Họp dự án',
+          dueDate: DateTime(2026, 10, 22, 14)),
+    ]);
+    await h.handle('mai 9h họp dự án');
+    final ask = await h.handle('mai 2h chiều họp dự án');
+    expect(ask, contains('đã có'));
+    expect(repo.store.length, 1);
+    await h.handle('có');
+    expect(repo.store.length, 2);
   });
 
   test('completeTask đặt completedAt và hủy push', () async {
@@ -231,6 +345,29 @@ void main() {
     expect(repo.store['id0']!.isCompleted, true);
     expect(repo.store['id0']!.completedAt, now);
     expect(rem.cancelled, [4]);
+  });
+
+  test('hiệu suất không nói kỳ → hỏi lại, rồi làm theo kỳ được trả lời', () async {
+    final h = build([]);
+    final q = await h.handle('đánh giá hiệu suất');
+    expect(q, contains('kỳ nào'));
+    expect(h.awaitingClarification, true);
+    expect(await h.handle('tuần này'), 'perf:week');
+  });
+
+  test('kỳ không hỗ trợ (tháng trước) → không tự đổi thành tháng này', () async {
+    final h = build([]);
+    final r = await h.handle('đánh giá hiệu suất tháng trước');
+    expect(r, contains('hôm nay, tuần này, tháng này'));
+    expect(await h.handle('tháng này'), 'perf:month');
+  });
+
+  test('kỳ chỉ nghe được ở cách nghe khác → hỏi xác nhận, không làm ngay', () async {
+    final h = build([]);
+    final r = await h.handle('đánh giá hiệu suất',
+        alternatives: ['đánh giá hiệu suất tuần này']);
+    expect(r, contains('Có phải'));
+    expect(await h.handle('đúng'), 'perf:week');
   });
 
   test('askPerformance chuyển cho PerformanceService', () async {

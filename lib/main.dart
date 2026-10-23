@@ -6,6 +6,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 
 import 'features/ai_engine/data/gemini_service.dart';
+import 'features/activity/domain/activity_log.dart';
 import 'features/ai_engine/domain/command_handler.dart';
 import 'features/analytics/data/performance_service.dart';
 import 'features/auth/auth_service.dart';
@@ -141,9 +142,14 @@ class SessionScope extends StatelessWidget {
         ProxyProvider2<TaskRepository, GeminiService, PerformanceService>(
           update: (_, repo, gemini, __) => PerformanceService(repo, gemini),
         ),
+        // Nhật ký hoạt động dùng chung: RAM + Firestore users/{uid}/activity_logs.
+        Provider<ActivityLog>(
+          create: (c) => ActivityLog(c.read<TaskRepository>())..load(),
+        ),
         ChangeNotifierProvider<TaskProvider>(
           create: (c) => TaskProvider(
-              c.read<TaskRepository>(), c.read<ReminderScheduler>()),
+              c.read<TaskRepository>(), c.read<ReminderScheduler>(),
+              log: c.read<ActivityLog>()),
         ),
         ChangeNotifierProvider<AssistantProvider>(
           create: (c) {
@@ -152,6 +158,7 @@ class SessionScope extends StatelessWidget {
               parser: c.read<GeminiService>(),
               repo: c.read<TaskRepository>(),
               reminders: c.read<ReminderScheduler>(),
+              log: c.read<ActivityLog>(),
               performanceReply: (period) async =>
                   (await perf.generate(period)).feedback,
             );

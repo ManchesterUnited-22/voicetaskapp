@@ -5,7 +5,7 @@ class AppConfig {
   /// Nếu đặt, app gọi Cloud Function này (kèm Firebase ID token) thay vì gọi Gemini trực tiếp,
   /// nên khóa API không nằm trong app. --dart-define=GEMINI_PROXY_URL=https://...
   static const geminiProxyUrl = String.fromEnvironment('GEMINI_PROXY_URL');
-  static const geminiModel = 'gemini-2.5-flash';
+  static const geminiModel = 'gemini-2.5-flash-lite';
     /// CHỈ ĐỂ CHỤP ẢNH BÁO CÁO: dùng dữ liệu mẫu cho phần đánh giá hiệu suất.
   /// Bật: flutter run --dart-define=DEMO_PERFORMANCE=true
   ///   /// CHỈ ĐỂ CHỤP ẢNH BÁO CÁO: dùng kho công việc giả trong bộ nhớ (không ghi Firestore).
