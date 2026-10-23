@@ -16,7 +16,7 @@ dependencies:
   cloud_firestore: ^5.4.4
   google_sign_in: ^6.2.2
   provider: ^6.1.2
-  speech_to_text: ^7.0.0
+  speech_to_text: ^7.6.0
   flutter_tts: ^4.1.0
   flutter_local_notifications: ^18.0.1
   timezone: ^0.10.0
