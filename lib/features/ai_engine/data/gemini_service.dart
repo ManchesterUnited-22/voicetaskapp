@@ -62,10 +62,18 @@ Schema:
 Quy tắc:
 - Luôn hiểu và phản hồi bằng tiếng Việt; không được trả lời bằng tiếng Anh.
 - Trường "question" và mọi câu chữ hướng tới người dùng phải là tiếng Việt thuần, ngắn gọn, không chèn từ tiếng Anh.
-- Văn bản đầu vào có thể là bản chép lời từ nhận dạng giọng nói và có lỗi đồng âm.
-  Hãy dùng toàn bộ ngữ cảnh câu lệnh để suy luận từ đúng, không máy móc theo một từ
-  riêng lẻ (ví dụ "hộp dự án" trong ngữ cảnh lịch làm việc thường là "họp dự án").
-  Chỉ sửa cách hiểu khi ngữ cảnh đủ rõ; không tự bịa thêm thông tin người dùng không nói.
+- Văn bản đầu vào là bản chép lời từ nhận dạng giọng nói, có thể sai đồng âm, sai dấu, sai số.
+  Lỗi hay gặp: "hộp"→"họp", "nhấc"→"nhắc", "rời/giời/dồi"→"dời", "sóa/xoa"→"xóa",
+  "chính"↔"chín", "bẩy"→"bảy", "hay"↔"hai", "nằm"→"năm", "sao"→"sáu", "tuấn"→"tuần",
+  "hoàng thành"→"hoàn thành".
+  1) Ưu tiên bản chính. Chỉ sửa lỗi đồng âm khi dựa vào ngữ cảnh và DANH SÁCH CÔNG VIỆC
+     chỉ có MỘT cách hiểu hợp lý.
+  2) Nếu có "các khả năng khác của máy nhận dạng", chọn phương án khớp nhất với ngữ cảnh / tên việc đang có.
+  3) KHÔNG tự đoán khi cách hiểu làm đổi hành động: câu vô nghĩa, giờ/ngày/con số nghe mơ hồ
+     (vd "5 giờ" hay "9 giờ"), hoặc việc cần sửa/xóa/hoàn thành không khớp rõ với việc nào
+     → intent = "needClarification", "question" nêu rõ điều nghe được,
+     vd "Mình nghe là họp lúc 5 giờ, đúng không, hay bạn nói 9 giờ?".
+  4) Không bịa thêm thông tin người dùng không nói.
 - Người dùng nói thiếu độ ưu tiên → "medium". Cụm như "gấp lắm", "làm ngay", "quan trọng", "ưu tiên số 1", "đừng quên" → "high".
 - Chào hỏi, cảm ơn, hỏi bạn là ai, trò chuyện xã giao không liên quan quản lý việc → intent = "chitchat",
   "reply" là 1-2 câu tiếng Việt thân thiện, không chèn tiếng Anh, có thể gợi ý một câu lệnh mẫu.
@@ -118,6 +126,7 @@ Quy tắc:
     required List<AppTask> tasks,
     DateTime? now,
     String? pendingContext,
+    List<String> alternatives = const [],
   }) async {
     final n = now ?? DateTime.now();
     final user = StringBuffer(_taskContext(tasks, n))..writeln();
@@ -128,6 +137,11 @@ Quy tắc:
       user.writeln('Hãy kết hợp hai câu thành một lệnh hoàn chỉnh.');
     } else {
       user.writeln('Câu lệnh: "$text"');
+    }
+    if (alternatives.isNotEmpty) {
+      user.writeln(
+          'Các khả năng khác của máy nhận dạng cho câu người dùng vừa nói: '
+          '${alternatives.map((a) => '"$a"').join(' | ')}');
     }
     user.writeln(
         'Nhắc lại: chỉ trả về JSON; mọi chữ hướng tới người dùng (reply, question) phải là tiếng Việt.');

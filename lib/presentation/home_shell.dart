@@ -17,12 +17,6 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
 
-  static const _titles = ['Trợ lý', 'Công việc'];
-  static const _subtitles = [
-    'Nói là xong, mọi việc để mình lo',
-    'Tất cả việc cần làm của bạn',
-    'Phân tích và gợi ý cải thiện',
-  ];
   static const _pages = <Widget>[
     AssistantScreen(),
     TasksScreen(),
@@ -30,44 +24,120 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-
     return AppBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        appBar: AppBar(
-          title: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 250),
-            layoutBuilder: (current, previous) => Stack(
-              alignment: Alignment.centerLeft,
-              children: [...previous, if (current != null) current],
-            ),
-            transitionBuilder: (child, anim) => FadeTransition(
-              opacity: anim,
-              child: SlideTransition(
-                position: Tween<Offset>(
-                  begin: const Offset(0, 0.25),
-                  end: Offset.zero,
-                ).animate(anim),
-                child: child,
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              _Header(auth: widget.auth),
+              Expanded(
+                // Giữ nguyên trạng thái các tab, chuyển tab có hiệu ứng mờ + trượt.
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    for (var i = 0; i < _pages.length; i++)
+                      IgnorePointer(
+                        ignoring: i != _index,
+                        child: ExcludeSemantics(
+                          excluding: i != _index,
+                          child: AnimatedOpacity(
+                            opacity: i == _index ? 1 : 0,
+                            duration: const Duration(milliseconds: 260),
+                            curve: Curves.easeOut,
+                            child: AnimatedSlide(
+                              offset: i == _index
+                                  ? Offset.zero
+                                  : Offset(i < _index ? -0.04 : 0.04, 0),
+                              duration: const Duration(milliseconds: 320),
+                              curve: Curves.easeOutCubic,
+                              // Tab đang ẩn thì tắt animation để đỡ tốn pin.
+                              child: TickerMode(
+                                enabled: i == _index,
+                                child: _pages[i],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
-            ),
+            ],
+          ),
+        ),
+        bottomNavigationBar: SafeArea(
+          top: false,
+          minimum: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+          child: _NavBar(
+            index: _index,
+            onChanged: (i) {
+              HapticFeedback.selectionClick();
+              setState(() => _index = i);
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ───────────────────────────── Header ─────────────────────────────
+
+String _greeting(DateTime n) {
+  final h = n.hour;
+  if (h < 11) return 'Chào buổi sáng';
+  if (h < 14) return 'Chào buổi trưa';
+  if (h < 18) return 'Chào buổi chiều';
+  return 'Chào buổi tối';
+}
+
+String _shortName(String? displayName, String? email) {
+  final n = displayName?.trim() ?? '';
+  if (n.isNotEmpty) return n.split(RegExp(r'\s+')).last;
+  final e = email ?? '';
+  if (e.contains('@')) return e.split('@').first;
+  return 'bạn';
+}
+
+class _Header extends StatelessWidget {
+  final AuthService auth;
+  const _Header({required this.auth});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final user = auth.currentUser;
+    final name = _shortName(user?.displayName, user?.email);
+    final initial =
+        name.isEmpty ? '?' : String.fromCharCode(name.runes.first).toUpperCase();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 10, 16, 6),
+      child: Row(
+        children: [
+          const LogoMark(size: 44),
+          const SizedBox(width: 12),
+          Expanded(
             child: Column(
-              key: ValueKey(_index),
-              mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  _titles[_index],
+                GradientText(
+                  AppInfo.name,
                   style: const TextStyle(
-                    fontSize: 26,
+                    fontSize: 22,
                     fontWeight: FontWeight.w800,
-                    letterSpacing: -0.5,
+                    letterSpacing: -0.6,
+                    height: 1.1,
                   ),
                 ),
+                const SizedBox(height: 2),
                 Text(
-                  _subtitles[_index],
+                  '${_greeting(DateTime.now())}, $name',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
@@ -77,93 +147,172 @@ class _HomeShellState extends State<HomeShell> {
               ],
             ),
           ),
-          actions: [
-            Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: IconButton.filledTonal(
-                tooltip: 'Đăng xuất',
-                icon: const Icon(Icons.logout_rounded),
-                onPressed: widget.auth.signOut,
-              ),
-            ),
-          ],
-        ),
-        // Giữ nguyên trạng thái các tab, nhưng chuyển tab có hiệu ứng mờ + trượt.
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            for (var i = 0; i < _pages.length; i++)
-              IgnorePointer(
-                ignoring: i != _index,
-                child: ExcludeSemantics(
-                  excluding: i != _index,
-                  child: AnimatedOpacity(
-                    opacity: i == _index ? 1 : 0,
-                    duration: const Duration(milliseconds: 260),
-                    curve: Curves.easeOut,
-                    child: AnimatedSlide(
-                      offset: i == _index
-                          ? Offset.zero
-                          : Offset(i < _index ? -0.04 : 0.04, 0),
-                      duration: const Duration(milliseconds: 320),
-                      curve: Curves.easeOutCubic,
-                      // Tab đang ẩn thì tắt animation để đỡ tốn pin.
-                      child: TickerMode(enabled: i == _index, child: _pages[i]),
+          PopupMenuButton<String>(
+            tooltip: 'Tài khoản',
+            offset: const Offset(0, 52),
+            onSelected: (v) {
+              if (v == 'out') auth.signOut();
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem<String>(
+                enabled: false,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      user?.displayName?.trim().isNotEmpty == true
+                          ? user!.displayName!
+                          : name,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: cs.onSurface,
+                      ),
                     ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-        bottomNavigationBar: SafeArea(
-          top: false,
-          minimum: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: dark
-                  ? const Color(0xFF1A1536).withValues(alpha: 0.94)
-                  : Colors.white.withValues(alpha: 0.94),
-              borderRadius: BorderRadius.circular(28),
-              border: Border.all(
-                color: dark
-                    ? Colors.white.withValues(alpha: 0.08)
-                    : Brand.violet.withValues(alpha: 0.10),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Brand.violet.withValues(alpha: dark ? 0.25 : 0.15),
-                  blurRadius: 28,
-                  offset: const Offset(0, 10),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(28),
-              child: MediaQuery.removePadding(
-                context: context,
-                removeBottom: true,
-                child: NavigationBar(
-                  selectedIndex: _index,
-                  onDestinationSelected: (i) {
-                    HapticFeedback.selectionClick();
-                    setState(() => _index = i);
-                  },
-                  destinations: const [
-                    NavigationDestination(
-                      icon: Icon(Icons.mic_none_rounded),
-                      selectedIcon: Icon(Icons.mic_rounded),
-                      label: 'Trợ lý',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.checklist_rounded),
-                      selectedIcon: Icon(Icons.task_alt_rounded),
-                      label: 'Công việc',
-                    ),
-                   
+                    if ((user?.email ?? '').isNotEmpty)
+                      Text(
+                        user!.email!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
                   ],
                 ),
               ),
+              const PopupMenuDivider(),
+              const PopupMenuItem<String>(
+                value: 'out',
+                child: Row(
+                  children: [
+                    Icon(Icons.logout_rounded, size: 20),
+                    SizedBox(width: 10),
+                    Text('Đăng xuất'),
+                  ],
+                ),
+              ),
+            ],
+            child: Container(
+              width: 42,
+              height: 42,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: Brand.warm,
+                boxShadow: [
+                  BoxShadow(
+                    color: Brand.pink.withValues(alpha: 0.35),
+                    blurRadius: 14,
+                    offset: const Offset(0, 5),
+                  ),
+                ],
+              ),
+              child: Text(
+                initial,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ───────────────────────────── Thanh điều hướng ─────────────────────────────
+
+class _NavBar extends StatelessWidget {
+  final int index;
+  final ValueChanged<int> onChanged;
+  const _NavBar({required this.index, required this.onChanged});
+
+  static const _items = [
+    (Icons.mic_none_rounded, Icons.mic_rounded, 'Trợ lý'),
+    (Icons.checklist_rounded, Icons.task_alt_rounded, 'Công việc'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Glass(
+      radius: 30,
+      padding: const EdgeInsets.all(6),
+      child: Row(
+        children: [
+          for (var i = 0; i < _items.length; i++)
+            Expanded(
+              child: _NavItem(
+                icon: _items[i].$1,
+                selectedIcon: _items[i].$2,
+                label: _items[i].$3,
+                selected: i == index,
+                onTap: () => onChanged(i),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NavItem extends StatelessWidget {
+  final IconData icon;
+  final IconData selectedIcon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _NavItem({
+    required this.icon,
+    required this.selectedIcon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final fg = selected ? Colors.white : cs.onSurfaceVariant;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
+          height: 52,
+          decoration: BoxDecoration(
+            gradient: selected ? Brand.gradient : null,
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: Brand.violet.withValues(alpha: 0.38),
+                      blurRadius: 16,
+                      offset: const Offset(0, 6),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(selected ? selectedIcon : icon, size: 22, color: fg),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                  color: fg,
+                ),
+              ),
+            ],
           ),
         ),
       ),

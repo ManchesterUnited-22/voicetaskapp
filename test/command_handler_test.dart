@@ -21,10 +21,10 @@ class FakeRepo implements TaskRepository {
       createdAt: t.createdAt,
       durationMinutes: t.durationMinutes,
       isCompleted: t.isCompleted,
-  isRecurring: t.isRecurring,
-  recurrenceRule: t.recurrenceRule,
-  completedAt: t.completedAt,
-  rescheduleCount: t.rescheduleCount,
+      isRecurring: t.isRecurring,
+      recurrenceRule: t.recurrenceRule,
+      completedAt: t.completedAt,
+      rescheduleCount: t.rescheduleCount,
     );
     store[saved.id] = saved;
     return saved;
@@ -66,6 +66,7 @@ class FakeReminders implements ReminderScheduler {
 class FakeParser implements CommandParser {
   final List<AiCommand> queue;
   final contexts = <String?>[];
+  final altsSeen = <List<String>>[];
   FakeParser(this.queue);
   @override
   Future<AiCommand> parse({
@@ -73,8 +74,10 @@ class FakeParser implements CommandParser {
     required List<AppTask> tasks,
     DateTime? now,
     String? pendingContext,
+    List<String> alternatives = const [],
   }) async {
     contexts.add(pendingContext);
+    altsSeen.add(alternatives);
     return queue.removeAt(0);
   }
 }
@@ -234,5 +237,23 @@ void main() {
       const AiCommand(intent: Intent.askPerformance, period: 'week'),
     ]);
     expect(await h.handle('Tuần này tôi làm việc thế nào?'), 'perf:week');
+  });
+
+  test('alternatives từ nhận dạng giọng nói được chuyển cho bộ phân tích', () async {
+    final parser = FakeParser([
+      AiCommand(
+          intent: Intent.createTask,
+          title: 'Họp dự án',
+          dueDate: DateTime(2026, 10, 22, 9)),
+      const AiCommand(intent: Intent.chitchat, reply: 'Chào bạn!'),
+    ]);
+    final h = build([], parser);
+    await h.handle('sáng mai 9h hộp dự án',
+        alternatives: ['sáng mai 9h họp dự án']);
+    await h.handle('xin chào');
+    expect(parser.altsSeen, [
+      ['sáng mai 9h họp dự án'],
+      <String>[],
+    ]);
   });
 }

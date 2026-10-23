@@ -10,7 +10,6 @@ enum Intent {
   chitchat,
   needClarification,
   unknown,
-
 }
 
 Intent intentFromString(String? s) => Intent.values.firstWhere(
@@ -25,6 +24,9 @@ abstract class CommandParser {
     required List<AppTask> tasks,
     DateTime? now,
     String? pendingContext,
+
+    /// Các cách nghe khác của máy nhận dạng giọng nói cho câu [text].
+    List<String> alternatives = const [],
   });
 }
 
@@ -46,7 +48,8 @@ class AiCommand {
 
   /// day | week | month | year — cho askPerformance.
   final String? period;
-    /// overdue | upcoming | all — cho queryTasks.
+
+  /// overdue | upcoming | all — cho queryTasks.
   final String? queryFilter;
 
   /// Câu trả lời xã giao khi intent = chitchat.
@@ -54,6 +57,7 @@ class AiCommand {
 
   /// true khi người dùng nói rõ "tất cả / hết / toàn bộ" (thao tác hàng loạt).
   final bool isBatch;
+
   /// Câu hỏi làm rõ khi intent = needClarification.
   final String? question;
 
@@ -92,7 +96,7 @@ class AiCommand {
       rangeEnd: _dt(j['rangeEnd']),
       period: j['period'] as String?,
       question: j['question'] as String?,
-            queryFilter: j['queryFilter'] as String?,
+      queryFilter: j['queryFilter'] as String?,
       reply: (j['reply'] as String?)?.trim(),
       isBatch: j['isBatch'] == true,
     );

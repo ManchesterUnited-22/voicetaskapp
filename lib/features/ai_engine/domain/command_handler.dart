@@ -96,7 +96,10 @@ class CommandHandler {
       n.contains('phục hồi') ||
       n == 'undo';
 
-  Future<String> handle(String text) async {
+  /// [alternatives]: các cách nghe khác của máy nhận dạng giọng nói (nếu có),
+  /// được chuyển cho bộ phân tích để chọn cách hiểu đúng ngữ cảnh.
+  Future<String> handle(String text,
+      {List<String> alternatives = const []}) async {
     final raw = text.trim();
     if (raw.isEmpty) return 'Mình chưa nghe rõ, bạn nói lại nhé.';
     final now = clock();
@@ -128,6 +131,7 @@ class CommandHandler {
       tasks: tasks,
       now: now,
       pendingContext: _pending,
+      alternatives: alternatives,
     );
     await repo.logVoice(rawText: raw, intent: cmd.intent.name);
 
@@ -148,10 +152,10 @@ class CommandHandler {
         return _complete(cmd, tasks, now);
       case Intent.queryTasks:
         return _query(cmd, tasks, now);
-     case Intent.askPerformance:
-  final fb = await performanceReply(cmd.period ?? 'week');
-  _pending = 'Trợ lý vừa nhận xét hiệu suất và hỏi lại người dùng: "$fb"';
-  return fb;
+      case Intent.askPerformance:
+        final fb = await performanceReply(cmd.period ?? 'week');
+        _pending = 'Trợ lý vừa nhận xét hiệu suất và hỏi lại người dùng: "$fb"';
+        return fb;
       case Intent.chitchat:
         return _chitchat(cmd);
       default:

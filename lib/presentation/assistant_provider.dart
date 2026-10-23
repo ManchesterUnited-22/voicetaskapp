@@ -41,6 +41,24 @@ class AssistantProvider extends ChangeNotifier {
   int _autoFollowUps = 0;
   static const _maxAutoFollowUps = 3;
 
+  // Dưới ngưỡng này thì đọc lại câu đã nghe để người dùng xác nhận.
+  // Xem log "STT conf=..." để chỉnh cho hợp với máy thật.
+  static const _lowConfidence = 0.7;
+
+  static const _yesWords = <String>{
+    'đúng', 'đúng rồi', 'đúng vậy', 'chính xác', 'có', 'ừ', 'ok', 'oke',
+    'vâng', 'dạ', 'phải', 'phải rồi', 'được',
+  };
+  static const _noWords = <String>{
+    'không', 'sai', 'sai rồi', 'không phải', 'không đúng', 'nhầm', 'nhầm rồi',
+  };
+
+  static String _normAnswer(String s) => s
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^\p{L}\p{N}\s]', unicode: true), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
   @override
   void notifyListeners() {
     if (!_disposed) super.notifyListeners();
@@ -106,7 +124,65 @@ class AssistantProvider extends ChangeNotifier {
       }
       return;
     }
-    await _process(text);
+
+    final conf = voice.lastConfidence;
+    final alts = voice.lastAlternatives;
+    debugPrint('STT conf=$conf alts=$alts');
+    // Máy nghe không chắc → đọc lại cho người dùng xác nhận trước khi làm.
+    // (Bỏ qua khi đang chờ "có/không" xác nhận xóa, vì câu đó rất ngắn.)
+    if (conf != null && conf < _lowConfidence && !handler.awaitingConfirmation) {
+      await _confirmHeard(text, alts);
+      return;
+    }
+    await _process(text, alternatives: alts);
+  }
+
+  /// Nghe không chắc: đọc lại câu đã nghe, chờ "đúng/không" rồi mới xử lý.
+  Future<void> _confirmHeard(String text, List<String> alternatives) async {
+    final ask = 'Mình nghe là: "$text". Đúng không?';
+    _messages.add(ChatMessage(ask, fromUser: false));
+    _set(AssistantState.speaking);
+    try {
+      await voice.speak(ask);
+    } catch (_) {}
+    // Người dùng đã ngắt lời (state đã đổi) thì dừng ở đây.
+    if (_disposed || _state != AssistantState.speaking) return;
+
+    _set(AssistantState.listening);
+    String ans;
+    try {
+      ans = await voice.listenOnce(onPartial: (p) {
+        _partial = p;
+        notifyListeners();
+      });
+    } catch (_) {
+      ans = '';
+    }
+    final ansAlts = voice.lastAlternatives;
+    _partial = '';
+    if (_disposed) return;
+
+    final n = _normAnswer(ans);
+    if (n.isEmpty) {
+      _set(AssistantState.idle); // người dùng im lặng / tự dừng
+      return;
+    }
+    if (_yesWords.contains(n)) {
+      await _process(text, alternatives: alternatives);
+      return;
+    }
+    if (_noWords.contains(n)) {
+      await _say('Xin lỗi, bạn nói lại giúp mình nhé.');
+      if (!_disposed &&
+          _state == AssistantState.idle &&
+          _autoFollowUps < _maxAutoFollowUps) {
+        _autoFollowUps++;
+        await _listenAndSend();
+      }
+      return;
+    }
+    // Câu khác → coi như người dùng nói lại lệnh.
+    await _process(ans, alternatives: ansAlts);
   }
 
   /// Nói một câu thông báo của hệ thống (không đi qua AI, không tự nghe tiếp).
@@ -126,12 +202,13 @@ class AssistantProvider extends ChangeNotifier {
     return _process(text, speak: speak);
   }
 
-  Future<void> _process(String text, {bool speak = true}) async {
+  Future<void> _process(String text,
+      {bool speak = true, List<String> alternatives = const []}) async {
     _messages.add(ChatMessage(text, fromUser: true));
     _set(AssistantState.thinking);
     String reply;
     try {
-      reply = await handler.handle(text);
+      reply = await handler.handle(text, alternatives: alternatives);
     } catch (e) {
       debugPrint('handler error: $e');
       reply = friendlyError(e); // báo đúng nguyên nhân (mất mạng, quá chậm...)

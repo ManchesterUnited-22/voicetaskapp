@@ -65,6 +65,18 @@ class VoiceService {
   void Function(String)? _onPartial;
   DateTime _startedAt = DateTime.now();
 
+  // Độ tin cậy + các cách nghe khác (n-best) của lần nghe gần nhất.
+  final _segConfidences = <double>[]; // độ tin cậy từng đoạn đã chốt (nếu máy báo)
+  final _segAlternates = <List<String>>[]; // cách nghe khác của từng đoạn đã chốt
+  double? _lastConfidence;
+  List<String> _lastAlternatives = const [];
+
+  /// Độ tin cậy thấp nhất giữa các đoạn (0..1). null = máy không báo.
+  double? get lastConfidence => _lastConfidence;
+
+  /// Các cách nghe khác của câu vừa nói (chỉ có khi câu gọn trong 1 đoạn).
+  List<String> get lastAlternatives => _lastAlternatives;
+
   String get _fullText =>
       [..._committed, if (_currentPartial.isNotEmpty) _currentPartial]
           .join(' ')
@@ -88,11 +100,19 @@ class VoiceService {
     }
     if (_ready) {
       try {
-        // Chọn đúng locale tiếng Việt mà máy hỗ trợ (vi_VN hoặc vi-VN).
+        // Chọn đúng locale tiếng Việt mà máy hỗ trợ, ưu tiên vi-VN.
         final locales = await _stt.locales();
-        final vi =
-            locales.where((l) => l.localeId.toLowerCase().startsWith('vi'));
-        if (vi.isNotEmpty) _localeId = vi.first.localeId;
+        final vi = locales
+            .where((l) => l.localeId.toLowerCase().startsWith('vi'))
+            .toList();
+        if (vi.isNotEmpty) {
+          _localeId = vi
+              .firstWhere(
+                (l) => l.localeId.toLowerCase().replaceAll('_', '-') == 'vi-vn',
+                orElse: () => vi.first,
+              )
+              .localeId;
+        }
       } catch (_) {}
       unawaited(_ensureTts());
     } else {
@@ -203,10 +223,13 @@ class VoiceService {
     _finish();
   }
 
-  void _commit(String text) {
+  void _commit(String text,
+      {double? confidence, List<String> alternates = const []}) {
     // Bỏ qua nếu thiết bị báo kết quả cuối hai lần cho cùng một đoạn.
     if (text.isNotEmpty && (_committed.isEmpty || _committed.last != text)) {
       _committed.add(text);
+      _segAlternates.add(alternates);
+      if (confidence != null) _segConfidences.add(confidence);
     }
     _currentPartial = '';
   }
@@ -220,9 +243,21 @@ class VoiceService {
       _armSilenceTimer();
       if (!r.finalResult) _currentPartial = words;
     }
-    if (r.finalResult) {
+        if (r.finalResult) {
+      final alts = r.alternates
+          .map((a) => a.recognizedWords.trim())
+          .where((w) => w.isNotEmpty && w != words)
+          .toSet()
+          .take(3)
+          .toList();
+      // Độ tin cậy 0..1; giá trị <= 0 nghĩa là máy không báo.
+      final conf = r.alternates.isNotEmpty ? r.alternates.first.confidence : -1.0;
       // Chốt đoạn này, KHÔNG kết thúc phiên: đợi nghe tiếp.
-      _commit(words.isNotEmpty ? words : _currentPartial);
+      _commit(
+        words.isNotEmpty ? words : _currentPartial,
+        confidence: conf > 0 ? conf : null,
+        alternates: alts,
+      );
     }
     _onPartial?.call(_fullText);
   }
@@ -259,6 +294,7 @@ class VoiceService {
   /// Nghe một câu lệnh; ghép nhiều đoạn, chỉ kết thúc khi người dùng im
   /// ~2,5 giây, bấm dừng, hoặc không nói gì sau ~9 giây.
   /// Trả về chuỗi rỗng nếu không nghe được; xem [lastIssue] để biết lý do.
+  /// Sau khi xong, xem [lastConfidence] và [lastAlternatives].
   Future<String> listenOnce({void Function(String)? onPartial}) async {
     _issue = null;
     if (!await init()) return '';
@@ -274,6 +310,10 @@ class VoiceService {
     _stopRequested = false;
     _starting = false;
     _hardErrors = 0;
+    _segConfidences.clear();
+    _segAlternates.clear();
+    _lastConfidence = null;
+    _lastAlternatives = const [];
     _onPartial = onPartial;
     _startedAt = DateTime.now();
     _noSpeechTimer = Timer(_noSpeechLimit, _onNoSpeech);
@@ -283,6 +323,16 @@ class VoiceService {
       _maxTotal + const Duration(seconds: 5),
       onTimeout: () => _fullText,
     );
+
+    // Chỉ tin độ tin cậy khi MỌI đoạn đều có điểm và không còn chữ chưa chốt.
+    final allScored = _committed.isNotEmpty &&
+        _currentPartial.isEmpty &&
+        _segConfidences.length == _committed.length;
+    _lastConfidence =
+        allScored ? _segConfidences.reduce((a, b) => a < b ? a : b) : null;
+    _lastAlternatives =
+        _committed.length == 1 ? _segAlternates.first : const [];
+
     _cancelTimers();
     _session = null;
     _onPartial = null;

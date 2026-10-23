@@ -7,6 +7,25 @@ import 'package:provider/provider.dart';
 import '../app_theme.dart';
 import '../assistant_provider.dart';
 
+class _Suggestion {
+  final IconData icon;
+  final String title;
+  final String command;
+  final Color color;
+  const _Suggestion(this.icon, this.title, this.command, this.color);
+}
+
+const _suggestions = [
+  _Suggestion(Icons.add_task_rounded, 'Tạo việc mới',
+      'Sáng mai 9h họp dự án', Brand.violet),
+  _Suggestion(Icons.event_note_rounded, 'Lịch hôm nay',
+      'Hôm nay tôi có việc gì?', Brand.blue),
+  _Suggestion(Icons.insights_rounded, 'Hiệu suất',
+      'Đánh giá hiệu suất tuần này', Brand.orange),
+  _Suggestion(Icons.repeat_rounded, 'Việc lặp lại',
+      'Nhắc tôi uống thuốc mỗi ngày lúc 8h', Brand.green),
+];
+
 class AssistantScreen extends StatefulWidget {
   const AssistantScreen({super.key});
 
@@ -17,14 +36,11 @@ class AssistantScreen extends StatefulWidget {
 class _AssistantScreenState extends State<AssistantScreen>
     with SingleTickerProviderStateMixin {
   final _scroll = ScrollController();
+  final _input = TextEditingController();
+  final _focus = FocusNode();
   late final AnimationController _loop;
   int _lastItems = 0;
-
-  static const _suggestions = [
-    'Sáng mai 9h họp dự án',
-    'Hôm nay tôi có việc gì?',
-    'Đánh giá hiệu suất tuần này',
-  ];
+  bool _typing = false;
 
   @override
   void initState() {
@@ -39,6 +55,8 @@ class _AssistantScreenState extends State<AssistantScreen>
   void dispose() {
     _loop.dispose();
     _scroll.dispose();
+    _input.dispose();
+    _focus.dispose();
     super.dispose();
   }
 
@@ -52,15 +70,35 @@ class _AssistantScreenState extends State<AssistantScreen>
         }
       });
 
+  void _toggleTyping() {
+    setState(() => _typing = !_typing);
+    if (_typing) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focus.requestFocus();
+      });
+    } else {
+      _focus.unfocus();
+    }
+  }
+
+  void _submitText(AssistantProvider a) {
+    final t = _input.text.trim();
+    if (t.isEmpty || a.state != AssistantState.idle) return;
+    _input.clear();
+    a.send(t, speak: false); // gõ chữ thì trả lời bằng chữ, không đọc to
+  }
+
   @override
   Widget build(BuildContext context) {
     final a = context.watch<AssistantProvider>();
     final cs = Theme.of(context).colorScheme;
     final msgs = a.messages;
+    final idle = a.state == AssistantState.idle;
     final showTyping = a.state == AssistantState.thinking;
     final showPartial =
         a.state == AssistantState.listening && a.partial.isNotEmpty;
     final count = msgs.length + (showTyping || showPartial ? 1 : 0);
+    final hero = msgs.length <= 1 && idle;
 
     if (count != _lastItems) {
       _lastItems = count;
@@ -68,83 +106,385 @@ class _AssistantScreenState extends State<AssistantScreen>
     }
 
     final (label, color) = switch (a.state) {
-      AssistantState.listening => ('Đang nghe…', Brand.pink),
-      AssistantState.thinking => ('Đang suy nghĩ…', cs.primary),
+      AssistantState.listening => ('Đang nghe bạn nói…', Brand.pink),
+      AssistantState.thinking => ('Đang xử lý…', cs.primary),
       AssistantState.speaking => ('Đang trả lời…', const Color(0xFF0891B2)),
-      AssistantState.idle => ('Chạm vào micro để nói', cs.onSurfaceVariant),
+      AssistantState.idle => ('Chạm micro để nói', cs.onSurfaceVariant),
     };
-
-    final showSuggestions =
-        msgs.length <= 1 && a.state == AssistantState.idle;
 
     return Column(
       children: [
         Expanded(
-          child: ListView.builder(
-            controller: _scroll,
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-            itemCount: count,
-            itemBuilder: (_, i) {
-              if (i < msgs.length) {
-                return _Bubble(msgs[i].text, fromUser: msgs[i].fromUser);
-              }
-              return showTyping
-                  ? _TypingBubble(t: _loop)
-                  : _Bubble(a.partial, fromUser: true, ghost: true);
-            },
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            layoutBuilder: (current, previous) => Stack(
+              fit: StackFit.expand,
+              children: [...previous, if (current != null) current],
+            ),
+            child: hero
+                ? _Hero(
+                    key: const ValueKey('hero'),
+                    onPick: (c) => a.send(c),
+                  )
+                : ListView.builder(
+                    key: const ValueKey('chat'),
+                    controller: _scroll,
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    itemCount: count,
+                    itemBuilder: (_, i) {
+                      if (i < msgs.length) {
+                        return _Bubble(msgs[i].text,
+                            fromUser: msgs[i].fromUser);
+                      }
+                      return showTyping
+                          ? _TypingBubble(t: _loop)
+                          : _Bubble(a.partial, fromUser: true, ghost: true);
+                    },
+                  ),
           ),
         ),
+        // Gợi ý nhanh (khi đã có hội thoại và đang rảnh).
         AnimatedSize(
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeOutCubic,
           alignment: Alignment.topCenter,
-          child: showSuggestions
-              ? Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: Wrap(
-                      alignment: WrapAlignment.center,
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final s in _suggestions)
-                          ActionChip(
-                            label: Text(s),
-                            avatar:
-                                const Icon(Icons.north_east_rounded, size: 14),
-                            onPressed: () => a.send(s),
-                          ),
-                      ],
-                    ),
+          child: (!hero && idle && !_typing)
+              ? SizedBox(
+                  height: 48,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                    itemCount: _suggestions.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (_, i) {
+                      final s = _suggestions[i];
+                      return ActionChip(
+                        avatar: Icon(s.icon, size: 16, color: s.color),
+                        label: Text(s.title),
+                        onPressed: () => a.send(s.command),
+                      );
+                    },
                   ),
                 )
               : const SizedBox(width: double.infinity),
         ),
-        AnimatedSwitcher(
+        // Ô gõ lệnh (dự phòng khi nói không rõ).
+        AnimatedSize(
           duration: const Duration(milliseconds: 250),
-          child: Padding(
-            key: ValueKey(a.state),
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: Text(
-              label,
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    color: color,
-                    fontWeight: FontWeight.w600,
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.bottomCenter,
+          child: _typing
+              ? _InputBar(
+                  controller: _input,
+                  focus: _focus,
+                  enabled: idle,
+                  onSend: () => _submitText(a),
+                )
+              : const SizedBox(width: double.infinity),
+        ),
+        _StatusPill(
+          label: label,
+          color: color,
+          active: a.state == AssistantState.listening ||
+              a.state == AssistantState.speaking,
+          t: _loop,
+        ),
+        SizedBox(
+          height: _VoiceOrb.box,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 64,
+                child: Center(
+                  child: IconButton.filledTonal(
+                    tooltip: _typing ? 'Ẩn bàn phím' : 'Gõ lệnh',
+                    onPressed: _toggleTyping,
+                    icon: Icon(_typing
+                        ? Icons.keyboard_hide_rounded
+                        : Icons.keyboard_alt_outlined),
                   ),
-            ),
+                ),
+              ),
+              _VoiceOrb(
+                state: a.state,
+                t: _loop,
+                onTap: () {
+                  HapticFeedback.mediumImpact();
+                  a.toggleMic();
+                },
+              ),
+              const SizedBox(width: 64),
+            ],
           ),
         ),
-        _VoiceOrb(
-          state: a.state,
-          t: _loop,
-          onTap: () {
-            HapticFeedback.mediumImpact();
-            a.toggleMic();
-          },
-        ),
       ],
+    );
+  }
+}
+
+// ───────────────────────────── Màn chào ─────────────────────────────
+
+class _Hero extends StatelessWidget {
+  final void Function(String command) onPick;
+  const _Hero({super.key, required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    final big = tt.headlineSmall?.copyWith(
+      fontWeight: FontWeight.w800,
+      height: 1.15,
+      letterSpacing: -0.5,
+    );
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Reveal(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Mình có thể giúp gì', style: big),
+                GradientText('cho bạn hôm nay?',
+                    gradient: Brand.aurora, style: big),
+                const SizedBox(height: 10),
+                Text(
+                  'Nói tự nhiên bằng tiếng Việt — mình sẽ tạo việc, '
+                  'xếp giờ và nhắc bạn đúng lúc.',
+                  style: tt.bodyMedium?.copyWith(
+                    color: cs.onSurfaceVariant,
+                    height: 1.45,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 22),
+          Text(
+            'GỢI Ý CHO BẠN',
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.2,
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 10),
+          GridView.count(
+            crossAxisCount: 2,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            childAspectRatio: 1.0,
+            children: [
+              for (var i = 0; i < _suggestions.length; i++)
+                Reveal(
+                  index: i + 1,
+                  child: _SuggestionTile(
+                    s: _suggestions[i],
+                    onTap: () => onPick(_suggestions[i].command),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SuggestionTile extends StatelessWidget {
+  final _Suggestion s;
+  final VoidCallback onTap;
+  const _SuggestionTile({required this.s, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Card(
+      child: InkWell(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onTap();
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: s.color.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(s.icon, color: s.color, size: 22),
+              ),
+              const Spacer(),
+              Text(
+                s.title,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                '“${s.command}”',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.3,
+                  color: cs.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ───────────────────────────── Ô gõ lệnh ─────────────────────────────
+
+class _InputBar extends StatelessWidget {
+  final TextEditingController controller;
+  final FocusNode focus;
+  final bool enabled;
+  final VoidCallback onSend;
+  const _InputBar({
+    required this.controller,
+    required this.focus,
+    required this.enabled,
+    required this.onSend,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: Glass(
+        radius: 26,
+        padding: const EdgeInsets.fromLTRB(18, 4, 6, 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: controller,
+                focusNode: focus,
+                enabled: enabled,
+                textInputAction: TextInputAction.send,
+                onSubmitted: (_) => onSend(),
+                decoration: const InputDecoration(
+                  hintText: 'Hoặc gõ lệnh ở đây…',
+                  filled: false,
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  disabledBorder: InputBorder.none,
+                  contentPadding: EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+            IconButton.filled(
+              tooltip: 'Gửi',
+              onPressed: enabled ? onSend : null,
+              icon: const Icon(Icons.arrow_upward_rounded),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ───────────────────────────── Trạng thái ─────────────────────────────
+
+class _StatusPill extends StatelessWidget {
+  final String label;
+  final Color color;
+  final bool active;
+  final Animation<double> t;
+  const _StatusPill({
+    required this.label,
+    required this.color,
+    required this.active,
+    required this.t,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 250),
+      child: Container(
+        key: ValueKey(label),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: color.withValues(alpha: 0.25)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (active)
+              _Wave(t: t, color: color)
+            else
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Sóng âm nhỏ khi đang nghe / đang đọc.
+class _Wave extends StatelessWidget {
+  final Animation<double> t;
+  final Color color;
+  const _Wave({required this.t, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: t,
+      builder: (_, __) => Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          for (var i = 0; i < 5; i++)
+            Container(
+              width: 3.5,
+              height: 6 + 12 * (0.5 + 0.5 * math.sin(t.value * 4 * math.pi + i * 0.9)),
+              margin: const EdgeInsets.symmetric(horizontal: 1.2),
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -156,13 +496,20 @@ BoxDecoration _assistantBubble(BuildContext context, BorderRadius radius) {
   return BoxDecoration(
     color: dark
         ? Colors.white.withValues(alpha: 0.08)
-        : Colors.white.withValues(alpha: 0.9),
+        : Colors.white.withValues(alpha: 0.92),
     borderRadius: radius,
     border: Border.all(
       color: dark
           ? Colors.white.withValues(alpha: 0.08)
           : Brand.violet.withValues(alpha: 0.10),
     ),
+    boxShadow: [
+      BoxShadow(
+        color: Brand.violet.withValues(alpha: dark ? 0.0 : 0.06),
+        blurRadius: 12,
+        offset: const Offset(0, 4),
+      ),
+    ],
   );
 }
 
@@ -310,6 +657,9 @@ class _TypingBubble extends StatelessWidget {
 // ───────────────────────────── Quả cầu micro ─────────────────────────────
 
 class _VoiceOrb extends StatelessWidget {
+  static const double box = 164; // khung vẽ hiệu ứng
+  static const double orb = 80; // đường kính nút micro
+
   final AssistantState state;
   final Animation<double> t;
   final VoidCallback onTap;
@@ -327,7 +677,7 @@ class _VoiceOrb extends StatelessWidget {
         (Brand.cyan, Brand.green, Icons.graphic_eq_rounded),
     };
 
-    final orb = Semantics(
+    final button = Semantics(
       button: true,
       label: state == AssistantState.listening ? 'Dừng nghe' : 'Nói với trợ lý',
       child: GestureDetector(
@@ -335,8 +685,8 @@ class _VoiceOrb extends StatelessWidget {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 400),
           curve: Curves.easeOut,
-          width: 96,
-          height: 96,
+          width: orb,
+          height: orb,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             gradient: LinearGradient(
@@ -347,7 +697,7 @@ class _VoiceOrb extends StatelessWidget {
             boxShadow: [
               BoxShadow(
                 color: c1.withValues(alpha: 0.55),
-                blurRadius: 30,
+                blurRadius: 28,
                 spreadRadius: 1,
                 offset: const Offset(0, 8),
               ),
@@ -359,7 +709,7 @@ class _VoiceOrb extends StatelessWidget {
               scale: anim,
               child: FadeTransition(opacity: anim, child: child),
             ),
-            child: Icon(icon, key: ValueKey(icon), size: 42, color: Colors.white),
+            child: Icon(icon, key: ValueKey(icon), size: 36, color: Colors.white),
           ),
         ),
       ),
@@ -378,8 +728,8 @@ class _VoiceOrb extends StatelessWidget {
     };
 
     return SizedBox(
-      width: 220,
-      height: 220,
+      width: box,
+      height: box,
       child: Stack(
         alignment: Alignment.center,
         children: [
@@ -395,7 +745,7 @@ class _VoiceOrb extends StatelessWidget {
           ),
           AnimatedBuilder(
             animation: t,
-            child: orb,
+            child: button,
             builder: (_, child) => Transform.scale(
               scale: 1 + amp * math.sin(t.value * 2 * math.pi * speed),
               child: child,
@@ -414,7 +764,7 @@ class _OrbPainter extends CustomPainter {
   final Color c2;
   const _OrbPainter(this.t, this.state, this.c1, this.c2);
 
-  static const double _r = 48;
+  static const double _r = _VoiceOrb.orb / 2;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -435,22 +785,22 @@ class _OrbPainter extends CustomPainter {
           );
         }
       case AssistantState.thinking:
-        final rect = Rect.fromCircle(center: c, radius: _r + 14);
+        final rect = Rect.fromCircle(center: c, radius: _r + 12);
         final paint = Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 5
+          ..strokeWidth = 4.5
           ..strokeCap = StrokeCap.round
           ..shader = SweepGradient(
             colors: [c1.withValues(alpha: 0), c1, c2],
             stops: const [0.0, 0.75, 1.0],
             transform: GradientRotation(t * 2 * math.pi),
           ).createShader(rect);
-        canvas.drawCircle(c, _r + 14, paint);
+        canvas.drawCircle(c, _r + 12, paint);
       case AssistantState.idle:
-        final glow = _r + 14 + 6 * math.sin(t * 2 * math.pi);
+        final glow = _r + 12 + 5 * math.sin(t * 2 * math.pi);
         canvas.drawCircle(c, glow, Paint()..color = c1.withValues(alpha: 0.16));
         canvas.drawCircle(
-            c, _r + 30, Paint()..color = c1.withValues(alpha: 0.07));
+            c, _r + 26, Paint()..color = c1.withValues(alpha: 0.07));
     }
   }
 

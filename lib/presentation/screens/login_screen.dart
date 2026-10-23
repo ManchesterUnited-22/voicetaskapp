@@ -56,7 +56,6 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
 
     return Scaffold(
       body: AppBackground(
@@ -70,51 +69,56 @@ class _LoginScreenState extends State<LoginScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Center(
-                        child: Container(
-                          width: 84,
-                          height: 84,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            gradient: Brand.gradient,
-                            boxShadow: [
-                              BoxShadow(
-                                color: Brand.violet.withValues(alpha: 0.45),
-                                blurRadius: 32,
-                                offset: const Offset(0, 10),
-                              ),
-                            ],
-                          ),
-                          child: const Icon(Icons.mic_rounded,
-                              size: 40, color: Colors.white),
-                        ),
-                      ),
+                      const Center(child: LogoMark(size: 92)),
                       const SizedBox(height: 22),
-                      ShaderMask(
-                        shaderCallback: (r) => Brand.gradient.createShader(r),
-                        child: Text(
-                          'Trợ lý công việc\ngiọng nói',
-                          textAlign: TextAlign.center,
-                          style: tt.headlineMedium?.copyWith(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w800,
-                            height: 1.15,
-                          ),
+                      GradientText(
+                        AppInfo.name,
+                        textAlign: TextAlign.center,
+                        gradient: Brand.aurora,
+                        style: const TextStyle(
+                          fontSize: 36,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: -1,
+                          height: 1.1,
                         ),
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Nói một câu — việc được sắp xếp xong',
+                        AppInfo.tagline,
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: cs.onSurfaceVariant),
+                        style: TextStyle(
+                          color: cs.onSurfaceVariant,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
-                      const SizedBox(height: 28),
+                      const SizedBox(height: 16),
+                      const Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _Feature(Icons.mic_rounded, 'Nói tiếng Việt'),
+                          _Feature(Icons.auto_awesome_rounded, 'Tự xếp lịch'),
+                          _Feature(Icons.notifications_active_rounded,
+                              'Nhắc đúng giờ'),
+                        ],
+                      ),
+                      const SizedBox(height: 26),
                       Card(
                         child: Padding(
                           padding: const EdgeInsets.all(20),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
+                              Text(
+                                _register ? 'Tạo tài khoản mới' : 'Chào mừng trở lại',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleLarge
+                                    ?.copyWith(fontWeight: FontWeight.w800),
+                              ),
+                              const SizedBox(height: 16),
                               AnimatedSize(
                                 duration: const Duration(milliseconds: 300),
                                 curve: Curves.easeOutCubic,
@@ -175,7 +179,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                             color:
                                                 cs.error.withValues(alpha: 0.12),
                                             borderRadius:
-                                                BorderRadius.circular(12),
+                                                BorderRadius.circular(14),
                                           ),
                                           child: Row(
                                             children: [
@@ -270,6 +274,43 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _Feature extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  const _Feature(this.icon, this.label);
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: dark
+            ? Colors.white.withValues(alpha: 0.07)
+            : Colors.white.withValues(alpha: 0.8),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Brand.violet.withValues(alpha: 0.15)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15, color: Brand.violet),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.w600,
+              color: cs.onSurface,
+            ),
+          ),
+        ],
       ),
     );
   }

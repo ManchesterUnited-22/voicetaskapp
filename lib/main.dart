@@ -40,7 +40,7 @@ class App extends StatelessWidget {
   Widget build(BuildContext context) {
     final auth = AuthService();
     return MaterialApp(
-      title: 'Trợ lý công việc giọng nói',
+      title: AppInfo.name,
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
@@ -78,6 +78,7 @@ class _Splash extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
       body: AppBackground(
         child: Center(
@@ -86,21 +87,26 @@ class _Splash extends StatelessWidget {
             duration: const Duration(milliseconds: 800),
             curve: Curves.elasticOut,
             builder: (_, v, child) => Transform.scale(scale: v, child: child),
-            child: Container(
-              width: 88,
-              height: 88,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: Brand.gradient,
-                boxShadow: [
-                  BoxShadow(
-                    color: Brand.violet.withValues(alpha: 0.5),
-                    blurRadius: 36,
-                    offset: const Offset(0, 10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const LogoMark(size: 96),
+                const SizedBox(height: 20),
+                GradientText(
+                  AppInfo.name,
+                  gradient: Brand.aurora,
+                  style: const TextStyle(
+                    fontSize: 30,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.8,
                   ),
-                ],
-              ),
-              child: const Icon(Icons.mic_rounded, size: 44, color: Colors.white),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  AppInfo.tagline,
+                  style: TextStyle(color: cs.onSurfaceVariant),
+                ),
+              ],
             ),
           ),
         ),
@@ -125,7 +131,10 @@ class SessionScope extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        Provider<TaskRepository>(create: (_) => AppConfig.demoData ? DemoTaskRepository() : FirestoreTaskRepository(uid)),
+        Provider<TaskRepository>(
+            create: (_) => AppConfig.demoData
+                ? DemoTaskRepository()
+                : FirestoreTaskRepository(uid)),
         Provider<ReminderScheduler>.value(value: notifications),
         Provider<GeminiService>(create: (_) => GeminiService()),
         Provider<VoiceService>(create: (_) => VoiceService()),
@@ -133,8 +142,8 @@ class SessionScope extends StatelessWidget {
           update: (_, repo, gemini, __) => PerformanceService(repo, gemini),
         ),
         ChangeNotifierProvider<TaskProvider>(
-          create: (c) =>
-              TaskProvider(c.read<TaskRepository>(), c.read<ReminderScheduler>()),
+          create: (c) => TaskProvider(
+              c.read<TaskRepository>(), c.read<ReminderScheduler>()),
         ),
         ChangeNotifierProvider<AssistantProvider>(
           create: (c) {
@@ -162,7 +171,8 @@ class SessionScope extends StatelessWidget {
 class _DailyCoachTrigger extends StatefulWidget {
   final NotificationService notifications;
   final Widget child;
-  const _DailyCoachTrigger({required this.notifications, required this.child});
+  const _DailyCoachTrigger(
+      {required this.notifications, required this.child});
 
   @override
   State<_DailyCoachTrigger> createState() => _DailyCoachTriggerState();
