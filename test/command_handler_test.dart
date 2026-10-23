@@ -74,6 +74,7 @@ class FakeParser implements CommandParser {
     required List<AppTask> tasks,
     DateTime? now,
     String? pendingContext,
+    String? recentActions,
     List<String> alternatives = const [],
   }) async {
     contexts.add(pendingContext);

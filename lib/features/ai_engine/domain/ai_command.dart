@@ -7,6 +7,7 @@ enum Intent {
   completeTask,
   queryTasks,
   askPerformance,
+  recallAction, // hỏi lại về thao tác vừa làm ("vừa dời những việc nào?")
   chitchat,
   needClarification,
   unknown,
@@ -24,6 +25,9 @@ abstract class CommandParser {
     required List<AppTask> tasks,
     DateTime? now,
     String? pendingContext,
+
+    /// Nhật ký các thao tác gần đây (JSON) để hiểu "những việc đó / việc vừa dời".
+    String? recentActions,
 
     /// Các cách nghe khác của máy nhận dạng giọng nói cho câu [text].
     List<String> alternatives = const [],
@@ -61,6 +65,15 @@ class AiCommand {
   /// Câu hỏi làm rõ khi intent = needClarification.
   final String? question;
 
+  /// Khi bản chép lời nghe không hợp lý: câu hoàn chỉnh theo cách hiểu đã sửa.
+  /// App sẽ hỏi lại người dùng trước khi thực hiện.
+  final String? doubtCorrected;
+
+  /// move | edit | delete | complete | create | any — cho recallAction.
+  final String? actionKind;
+
+  bool get hasDoubt => (doubtCorrected ?? '').isNotEmpty;
+
   const AiCommand({
     required this.intent,
     this.title,
@@ -76,6 +89,8 @@ class AiCommand {
     this.reply,
     this.isBatch = false,
     this.question,
+    this.doubtCorrected,
+    this.actionKind,
   });
 
   static DateTime? _dt(dynamic v) =>
@@ -83,6 +98,7 @@ class AiCommand {
 
   factory AiCommand.fromJson(Map<String, dynamic> j) {
     final pr = j['priority'] as String?;
+    final doubt = j['doubt'];
     return AiCommand(
       intent: intentFromString(j['intent'] as String?),
       title: (j['title'] as String?)?.trim(),
@@ -99,6 +115,9 @@ class AiCommand {
       queryFilter: j['queryFilter'] as String?,
       reply: (j['reply'] as String?)?.trim(),
       isBatch: j['isBatch'] == true,
+      actionKind: j['actionKind'] as String?,
+      doubtCorrected:
+          doubt is Map ? (doubt['corrected'] as String?)?.trim() : null,
     );
   }
 }

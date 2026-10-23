@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../../../core/config.dart';
 import '../../../core/format.dart';
 import '../../../core/vi_text.dart';
@@ -11,7 +13,28 @@ import 'ai_command.dart';
 class _PendingConfirm {
   final DateTime at;
   final Future<String> Function() run;
-  _PendingConfirm(this.at, this.run);
+
+  /// Câu trả lời khi người dùng nói "không".
+  final String cancelMsg;
+  _PendingConfirm(this.at, this.run,
+      {this.cancelMsg = 'Mình đã hủy, chưa xóa gì cả.'});
+}
+
+/// Một việc bị tác động bởi một thao tác (để nhớ và đọc lại cho người dùng).
+class _ActionItem {
+  final String id;
+  final String title;
+  final DateTime? from; // giờ cũ (dời / xóa)
+  final DateTime? to; // giờ mới (dời / tạo)
+  const _ActionItem(this.id, this.title, {this.from, this.to});
+}
+
+/// Nhật ký một thao tác: loại, thời điểm, các việc liên quan.
+class _ActionRecord {
+  final DateTime at;
+  final String kind; // move | edit | delete | complete | create
+  final List<_ActionItem> items;
+  const _ActionRecord(this.at, this.kind, this.items);
 }
 
 /// Thao tác gần nhất, dùng cho "hoàn tác".
@@ -49,6 +72,12 @@ class CommandHandler {
   static const _yes = <String>{
     'có', 'ok', 'oke', 'đồng ý', 'xác nhận', 'chắc chắn', 'được', 'ừ',
     'vâng', 'dạ', 'đúng rồi', 'làm đi', 'xóa đi', 'xoá đi',
+    'đúng', 'đúng vậy', 'chính xác', 'phải', 'phải rồi', 'đúng ạ', 'vâng ạ',
+    'dạ đúng', 'dạ đúng rồi', 'ừ đúng rồi',
+  };
+  static const _no = <String>{
+    'không', 'sai', 'sai rồi', 'không phải', 'không đúng', 'nhầm', 'nhầm rồi',
+    'không phải rồi',
   };
   static const _cancel = <String>{
     'thôi', 'bỏ qua', 'hủy', 'huỷ', 'không cần', 'thôi khỏi', 'dừng lại',
@@ -59,6 +88,94 @@ class CommandHandler {
   DateTime? _pendingAt;
   _PendingConfirm? _confirm;
   _Undo? _undo;
+  int _doubtStreak = 0; // số lần liên tiếp phải hỏi lại vì nghe không hợp lý
+
+  // ── Bộ nhớ thao tác: AI nhớ mình vừa dời/xóa/hoàn thành/tạo những việc nào ──
+  static const _maxLog = 10;
+  final _log = <_ActionRecord>[];
+
+  static const _kindVerb = <String, String>{
+    'move': 'dời',
+    'edit': 'sửa',
+    'delete': 'xóa',
+    'complete': 'hoàn thành',
+    'create': 'tạo',
+  };
+
+  void _record(String kind, List<_ActionItem> items, DateTime at) {
+    if (items.isEmpty) return;
+    _log.add(_ActionRecord(at, kind, items));
+    if (_log.length > _maxLog) _log.removeAt(0);
+  }
+
+  /// Nhật ký gọn (mới nhất trước) gửi cho Gemini để hiểu "những việc đó".
+  String? _recentActionsJson() {
+    if (_log.isEmpty) return null;
+    String iso(DateTime d) => d.toIso8601String().substring(0, 16);
+    final list = _log.reversed
+        .take(5)
+        .map((r) => {
+              'kind': r.kind,
+              'at': iso(r.at),
+              'items': r.items
+                  .map((i) => {
+                        'id': i.id,
+                        'title': i.title,
+                        if (i.from != null) 'from': iso(i.from!),
+                        if (i.to != null) 'to': iso(i.to!),
+                      })
+                  .toList(),
+            })
+        .toList();
+    return jsonEncode(list);
+  }
+
+  String _itemText(_ActionItem i, DateTime now, String kind,
+      {bool compact = false}) {
+    switch (kind) {
+      case 'move':
+        if (i.to == null) return i.title;
+        if (compact || i.from == null) {
+          return '${i.title} (${formatDateTimeVi(i.to!, now)})';
+        }
+        return '${i.title} từ ${formatDateTimeVi(i.from!, now)} '
+            'sang ${formatDateTimeVi(i.to!, now)}';
+      case 'create':
+        return i.to == null
+            ? i.title
+            : '${i.title} lúc ${formatDateTimeVi(i.to!, now)}';
+      case 'delete':
+        return i.from == null
+            ? i.title
+            : '${i.title} (lúc ${formatDateTimeVi(i.from!, now)})';
+      default:
+        return i.title;
+    }
+  }
+
+  String _listItems(List<_ActionItem> items, DateTime now, String kind,
+      {int max = 8, bool compact = false}) {
+    final shown =
+        items.take(max).map((i) => _itemText(i, now, kind, compact: compact));
+    final more = items.length > max ? ' và ${items.length - max} việc khác' : '';
+    return '${shown.join(', ')}$more';
+  }
+
+  /// Trả lời "vừa dời / xóa / hoàn thành những việc nào?" từ nhật ký (không đoán).
+  String _recall(AiCommand c, DateTime now) {
+    final want = c.actionKind;
+    final any = want == null || want == 'any' || !_kindVerb.containsKey(want);
+    final rec = _log.reversed.where((r) => any || r.kind == want).firstOrNull;
+    if (rec == null) {
+      return any
+          ? 'Mình chưa thực hiện thao tác nào gần đây để nhắc lại.'
+          : 'Mình chưa ${_kindVerb[want]} việc nào gần đây.';
+    }
+    final verb = _kindVerb[rec.kind] ?? 'thao tác';
+    final n = rec.items.length;
+    return 'Lần $verb gần nhất (lúc ${formatDateTimeVi(rec.at, now)}) gồm $n việc: '
+        '${_listItems(rec.items, now, rec.kind, max: 10)}.';
+  }
 
   String? get _pending {
     final at = _pendingAt;
@@ -111,8 +228,9 @@ class CommandHandler {
       _confirm = null;
       if (now.difference(conf.at) <= _pendingTtl) {
         if (_yes.contains(n)) return conf.run();
-        if (n == 'không' || _cancel.contains(n)) {
-          return 'Mình đã hủy, chưa xóa gì cả.';
+        if (_no.contains(n) || _cancel.contains(n)) {
+          _pending = null;
+          return conf.cancelMsg;
         }
         // Câu khác → bỏ xác nhận, xử lý như lệnh mới.
       }
@@ -125,12 +243,37 @@ class CommandHandler {
       return 'Mình đã bỏ qua yêu cầu trước nhé.';
     }
 
+    // 4) Câu hỏi hiệu suất: nhận bằng luật cục bộ. Từ chỉ kỳ nghe đúng thì làm
+    //    luôn; nghe gần giống ("thắng", "thấp"...) thì hỏi lại trước khi làm.
+    //    Thử cả các cách nghe khác của máy nhận dạng.
+    final perfs = [raw, ...alternatives].map(matchPerformance).whereType<PerfMatch>();
+    final perf = perfs.where((p) => p.exact).firstOrNull ?? perfs.firstOrNull;
+    if (perf != null) {
+      _doubtStreak = 0;
+      await repo.logVoice(rawText: raw, intent: Intent.askPerformance.name);
+      Future<String> runPerf() async {
+        _pending = null;
+        final fb = await performanceReply(perf.period);
+        _pending = 'Trợ lý vừa nhận xét hiệu suất và hỏi lại người dùng: "$fb"';
+        return fb;
+      }
+
+      if (perf.exact) return runPerf();
+      final label = perfPeriodLabel[perf.period] ?? 'tuần này';
+      _pending = 'Người dùng nói "$raw" (bản chép lời từ giọng nói, có thể sai). '
+          'Mình đã hỏi lại có phải muốn xem hiệu suất $label không.';
+      _confirm = _PendingConfirm(now, runPerf,
+          cancelMsg: 'Vậy bạn nói lại giúp mình nhé.');
+      return 'Mình nghe là "$raw". Có phải bạn muốn xem hiệu suất $label không?';
+    }
+
     final tasks = await repo.getAll();
     final cmd = await parser.parse(
       text: raw,
       tasks: tasks,
       now: now,
       pendingContext: _pending,
+      recentActions: _recentActionsJson(),
       alternatives: alternatives,
     );
     await repo.logVoice(rawText: raw, intent: cmd.intent.name);
@@ -139,8 +282,35 @@ class CommandHandler {
       _pending = _pending == null ? raw : '$_pending | $raw';
       return vietnameseOr(cmd.question, 'Bạn có thể nói rõ hơn được không?');
     }
-    _pending = null;
 
+    // 5) Nghe không hợp lý (nghi sai âm): hỏi lại trước khi thực hiện.
+    if (cmd.hasDoubt) {
+      if (_doubtStreak >= 2) {
+        _doubtStreak = 0;
+        _pending = null;
+        return 'Mình vẫn nghe chưa rõ. Bạn thử nói chậm hơn, hoặc gõ lệnh vào ô chat nhé.';
+      }
+      _doubtStreak++;
+      final fixed = cmd.doubtCorrected!;
+      _pending = 'Người dùng nói "$raw" (bản chép lời từ giọng nói, có thể sai). '
+          'Mình nghi ý bạn là "$fixed" và đã hỏi lại.';
+      _confirm = _PendingConfirm(
+        now,
+        () async {
+          _doubtStreak = 0;
+          _pending = null;
+          return _execute(cmd, await repo.getAll(), clock());
+        },
+        cancelMsg: 'Vậy bạn nói lại lệnh giúp mình nhé.',
+      );
+      return 'Mình nghe là "$raw". Có phải ý bạn là "$fixed" không?';
+    }
+    _doubtStreak = 0;
+    _pending = null;
+    return _execute(cmd, tasks, now);
+  }
+
+  Future<String> _execute(AiCommand cmd, List<AppTask> tasks, DateTime now) async {
     switch (cmd.intent) {
       case Intent.createTask:
         return _create(cmd, tasks, now);
@@ -156,6 +326,8 @@ class CommandHandler {
         final fb = await performanceReply(cmd.period ?? 'week');
         _pending = 'Trợ lý vừa nhận xét hiệu suất và hỏi lại người dùng: "$fb"';
         return fb;
+      case Intent.recallAction:
+        return _recall(cmd, now);
       case Intent.chitchat:
         return _chitchat(cmd);
       default:
@@ -176,6 +348,7 @@ class CommandHandler {
       return 'Mình không còn thao tác nào để hoàn tác.';
     }
     await u.revert();
+    if (_log.isNotEmpty) _log.removeLast(); // thao tác đã bị hoàn tác thì không còn trong nhật ký
     return 'Đã hoàn tác: ${u.label}.';
   }
 
@@ -209,6 +382,7 @@ class CommandHandler {
       recurrenceRule: c.recurrenceRule,
     ));
     await reminders.scheduleForTask(saved);
+    _record('create', [_ActionItem(saved.id, title, to: slot.start)], now);
     _undo = _Undo(now, 'tạo "$title"', () async {
       await reminders.cancelForTask(saved);
       await repo.delete(saved.id);
@@ -262,6 +436,14 @@ class CommandHandler {
     await reminders.cancelForTask(old);
     await reminders.scheduleForTask(next);
     final updated = next;
+    _record(
+      moved ? 'move' : 'edit',
+      [
+        _ActionItem(old.id, next.title,
+            from: moved ? old.dueDate : null, to: moved ? next.dueDate : null)
+      ],
+      now,
+    );
     _undo = _Undo(now, 'sửa "${old.title}"', () async {
       await repo.update(old);
       await reminders.cancelForTask(updated);
@@ -313,6 +495,18 @@ class CommandHandler {
       busy.add(next);
       moved.add((old, next));
     }
+    final movedTime = c.dueDate != null;
+    final kind = movedTime ? 'move' : 'edit';
+    _record(
+      kind,
+      [
+        for (final (old, next) in moved)
+          _ActionItem(old.id, next.title,
+              from: movedTime ? old.dueDate : null,
+              to: movedTime ? next.dueDate : null),
+      ],
+      now,
+    );
     _undo = _Undo(now, 'sửa ${targets.length} việc', () async {
       for (final (old, next) in moved) {
         await repo.update(old);
@@ -320,9 +514,20 @@ class CommandHandler {
         await reminders.scheduleForTask(old);
       }
     });
-    return c.dueDate != null
-        ? 'Đã dời ${targets.length} việc, xếp lần lượt từ ${formatDateTimeVi(c.dueDate!, now)}.'
-        : 'Đã cập nhật ${targets.length} việc.';
+    // Đọc rõ từng việc đã dời để người dùng không phải nhớ.
+    final list = _listItems(
+      [
+        for (final (old, next) in moved)
+          _ActionItem(old.id, next.title, from: old.dueDate, to: next.dueDate),
+      ],
+      now,
+      kind,
+      max: 6,
+      compact: true,
+    );
+    return movedTime
+        ? 'Đã dời ${targets.length} việc, xếp lần lượt từ ${formatDateTimeVi(c.dueDate!, now)}: $list.'
+        : 'Đã cập nhật ${targets.length} việc: $list.';
   }
 
   Future<String> _delete(AiCommand c, List<AppTask> tasks) async {
@@ -342,6 +547,11 @@ class CommandHandler {
       await reminders.cancelForTask(x);
       await repo.delete(x.id);
     }
+    _record(
+      'delete',
+      [for (final x in t) _ActionItem(x.id, x.title, from: x.dueDate)],
+      clock(),
+    );
     _undo = _Undo(
       clock(),
       t.length == 1 ? 'xóa "${t.first.title}"' : 'xóa ${t.length} việc',
@@ -373,6 +583,7 @@ class CommandHandler {
         created.add(saved);
       }
     }
+    _record('complete', [for (final x in t) _ActionItem(x.id, x.title)], now);
     _undo = _Undo(now, 'hoàn thành ${t.length} việc', () async {
       for (final s in created) {
         await reminders.cancelForTask(s);

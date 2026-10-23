@@ -44,7 +44,7 @@ Quy đổi thời gian tương đối ("sáng mai 8h", "chiều thứ 6 tuần s
 
 Schema:
 {
-  "intent": "createTask | updateTask | deleteTask | completeTask | queryTasks | askPerformance | chitchat | needClarification | unknown",
+  "intent": "createTask | updateTask | deleteTask | completeTask | queryTasks | askPerformance | recallAction | chitchat | needClarification | unknown",
   "title": string|null,            // tên việc, bỏ từ đệm như "nhắc tôi", "tạo giúp tôi"
   "dueDate": string|null,          // ISO-8601; createTask/updateTask
   "priority": "high|medium|low"|null,
@@ -53,10 +53,12 @@ Schema:
   "targetTaskIds": [string],       // id lấy từ DANH SÁCH CÔNG VIỆC; nhiều id nếu thao tác hàng loạt
   "rangeStart": string|null, "rangeEnd": string|null,   // queryTasks
   "period": "day|week|month|year"|null,                 // askPerformance
+  "actionKind": "move|edit|delete|complete|create|any"|null, // recallAction
   "queryFilter": "overdue|upcoming|done|all"|null,       // queryTasks
   "reply": string|null,            // câu trả lời xã giao khi chitchat (tiếng Việt)
   "question": string|null,         // câu hỏi làm rõ khi needClarification (tiếng Việt)
-  "isBatch": boolean
+  "isBatch": boolean,
+  "doubt": {"corrected": string, "reason": string}|null   // chỉ khi nghi bản chép lời nghe sai âm
 }
 
 Quy tắc:
@@ -65,7 +67,7 @@ Quy tắc:
 - Văn bản đầu vào là bản chép lời từ nhận dạng giọng nói, có thể sai đồng âm, sai dấu, sai số.
   Lỗi hay gặp: "hộp"→"họp", "nhấc"→"nhắc", "rời/giời/dồi"→"dời", "sóa/xoa"→"xóa",
   "chính"↔"chín", "bẩy"→"bảy", "hay"↔"hai", "nằm"→"năm", "sao"→"sáu", "tuấn"→"tuần",
-  "hoàng thành"→"hoàn thành".
+  "hoàng thành"→"hoàn thành", "thấp/thắng/thán"→"tháng".
   1) Ưu tiên bản chính. Chỉ sửa lỗi đồng âm khi dựa vào ngữ cảnh và DANH SÁCH CÔNG VIỆC
      chỉ có MỘT cách hiểu hợp lý.
   2) Nếu có "các khả năng khác của máy nhận dạng", chọn phương án khớp nhất với ngữ cảnh / tên việc đang có.
@@ -74,6 +76,16 @@ Quy tắc:
      → intent = "needClarification", "question" nêu rõ điều nghe được,
      vd "Mình nghe là họp lúc 5 giờ, đúng không, hay bạn nói 9 giờ?".
   4) Không bịa thêm thông tin người dùng không nói.
+  5) KIỂM TRA TÍNH HỢP LÝ (quan trọng): trước khi chọn intent, tự hỏi "câu này có nghĩa và hợp lý như một
+     lệnh quản lý công việc không?". Nếu có từ/cụm là tiếng Việt hợp lệ nhưng VÔ LÝ trong ngữ cảnh lệnh, và có
+     từ đồng âm/gần âm làm câu hợp lý hơn rõ rệt (vd "đánh giá hiệu suất thắng" → "hiệu suất tháng này";
+     "hộp dự án" → "họp dự án"; "xóa lịch hợp" → "họp"), thì xử lý lệnh theo cách hiểu đã sửa VÀ điền
+     "doubt": {"corrected": câu hoàn chỉnh theo cách hiểu đã sửa (tiếng Việt, tự nhiên), "reason": lý do ngắn}.
+     Ứng dụng sẽ hỏi lại người dùng trước khi thực hiện.
+     - Chỉ điền "doubt" khi thật sự nghi nghe sai. Câu mạch lạc, hợp lý như đã nghe thì để "doubt" = null,
+       không điền chỉ vì muốn chắc ăn.
+     - Tên việc, tên riêng, số: không "sửa" nếu không có dấu hiệu vô lý.
+     - Nếu vô lý mà không đoán được cách sửa → intent = "needClarification", không điền doubt.
 - Người dùng nói thiếu độ ưu tiên → "medium". Cụm như "gấp lắm", "làm ngay", "quan trọng", "ưu tiên số 1", "đừng quên" → "high".
 - Chào hỏi, cảm ơn, hỏi bạn là ai, trò chuyện xã giao không liên quan quản lý việc → intent = "chitchat",
   "reply" là 1-2 câu tiếng Việt thân thiện, không chèn tiếng Anh, có thể gợi ý một câu lệnh mẫu.
@@ -92,6 +104,14 @@ Quy tắc:
   rangeStart = 00:00 của ngày đầu, rangeEnd = 00:00 của NGÀY SAU ngày cuối (vd "hôm nay" → từ 00:00 hôm nay đến 00:00 ngày mai).
   Hỏi một khoảng giờ cụ thể thì dùng đúng giờ nói. Tuyệt đối không dùng createTask cho câu hỏi.
 - Hỏi "đã hoàn thành việc gì" → queryTasks với queryFilter = "done".
+- LỊCH SỬ THAO TÁC: nếu có "NHẬT KÝ THAO TÁC GẦN ĐÂY" (mới nhất ở đầu) thì đó là những việc trợ lý VỪA làm.
+  + Người dùng hỏi lại về việc vừa làm ("vừa dời những việc nào", "mấy việc đó là gì", "đã xóa việc gì",
+    "vừa hoàn thành gì", "nhắc lại giúp mình") → intent = "recallAction", "actionKind" theo loại được hỏi
+    (dời → move, sửa → edit, xóa → delete, hoàn thành → complete, tạo → create; không nói rõ → any).
+    Không tự trả lời nội dung; ứng dụng sẽ đọc lại từ nhật ký.
+  + Người dùng nói "những việc đó / mấy việc vừa rồi / việc vừa dời / việc vừa tạo" trong một lệnh MỚI
+    (vd "dời mấy việc đó sang chiều", "đổi việc vừa tạo thành quan trọng") → lấy id trong nhật ký làm targetTaskIds.
+    Việc đã bị xóa thì không còn trong DANH SÁCH CÔNG VIỆC, đừng chọn làm đích cho dời/sửa.
 - Không hiểu → intent = "unknown".
 - Nếu NGỮ CẢNH là nhận xét hiệu suất kèm câu hỏi gợi mở và người dùng đồng ý (có, ok, được, làm đi…),
   hãy đổi lịch các việc liên quan trong DANH SÁCH sang khung giờ hiệu quả được nhắc đến
@@ -126,10 +146,14 @@ Quy tắc:
     required List<AppTask> tasks,
     DateTime? now,
     String? pendingContext,
+    String? recentActions,
     List<String> alternatives = const [],
   }) async {
     final n = now ?? DateTime.now();
     final user = StringBuffer(_taskContext(tasks, n))..writeln();
+    if (recentActions != null && recentActions.isNotEmpty) {
+      user.writeln('NHẬT KÝ THAO TÁC GẦN ĐÂY: $recentActions');
+    }
     if (pendingContext != null) {
       user.writeln(
           'NGỮ CẢNH (lệnh trước còn thiếu thông tin): $pendingContext');

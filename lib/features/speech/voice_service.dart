@@ -45,10 +45,21 @@ class VoiceService {
 
   bool get isListening => _stt.isListening;
 
-  static const _endSilence = Duration(milliseconds: 2500); // im bao lâu thì chốt câu
-  static const _noSpeechLimit = Duration(seconds: 9); // không nói gì thì dừng
+  // Im bao lâu thì chốt câu. Câu còn dang dở (đang kết ở "và", "lúc", "vào"...,
+  // hoặc đang đọc dở số) thì chờ lâu hơn để người dùng kịp nghĩ và nói tiếp.
+  static const _endSilence = Duration(milliseconds: 3500);
+  static const _endSilenceIncomplete = Duration(milliseconds: 6000);
+  static const _noSpeechLimit = Duration(seconds: 10); // không nói gì thì dừng
   static const _maxTotal = Duration(seconds: 60);
-  static const _restartDelay = Duration(milliseconds: 350);
+  static const _restartDelay = Duration(milliseconds: 150); // càng ngắn càng ít mất chữ
+  static const _finalWait = Duration(milliseconds: 1200); // chờ kết quả cuối sau stop()
+
+  // Từ thường nằm ở cuối câu nói dở → chắc chắn người dùng còn nói tiếp.
+  static const _danglingWords = <String>{
+    'và', 'rồi', 'thì', 'là', 'vào', 'lúc', 'ở', 'tại', 'cho', 'với', 'để',
+    'nhưng', 'hoặc', 'hay', 'của', 'trước', 'sau', 'khoảng', 'đến', 'từ',
+    'tới', 'về', 'trong', 'ngày', 'tháng', 'tuần', 'nhắc', 'mà', 'nếu', 'khi',
+  };
   static const _busyRestartDelay = Duration(milliseconds: 700);
   static const _maxHardErrors = 3;
 
@@ -198,16 +209,30 @@ class VoiceService {
     s.complete(_fullText);
   }
 
+  /// Thời gian im lặng cần chờ trước khi chốt câu, tùy câu đã trọn ý hay chưa.
+  Duration _silenceFor(String text) {
+    final t = text.trim().toLowerCase();
+    if (t.isEmpty) return _endSilence;
+    if (t.endsWith(',') || t.endsWith('...')) return _endSilenceIncomplete;
+    final last = t
+        .split(RegExp(r'\s+'))
+        .last
+        .replaceAll(RegExp(r'[^\p{L}\p{N}]', unicode: true), '');
+    if (_danglingWords.contains(last)) return _endSilenceIncomplete;
+    if (RegExp(r'^\d+$').hasMatch(last)) return _endSilenceIncomplete; // "lúc 9" (còn "giờ")
+    return _endSilence;
+  }
+
   void _armSilenceTimer() {
     _silenceTimer?.cancel();
-    // Có chữ rồi mà im liên tục _endSilence thì mới chốt câu.
-    _silenceTimer = Timer(_endSilence, () async {
+    // Có chữ rồi mà im liên tục thì mới chốt câu (dài/ngắn tùy câu đã trọn ý chưa).
+    _silenceTimer = Timer(_silenceFor(_fullText), () async {
       if (_fullText.isEmpty) return;
       _stopRequested = true;
       try {
         await _stt.stop();
       } catch (_) {}
-      _scheduleFinish(const Duration(milliseconds: 500)); // chờ kết quả cuối về
+      _scheduleFinish(_finalWait); // chờ kết quả cuối về (về sớm thì chốt sớm)
     });
   }
 
@@ -239,11 +264,12 @@ class VoiceService {
     if (s == null || s.isCompleted) return; // kết quả muộn của phiên cũ
     final words = r.recognizedWords.trim();
     if (words.isNotEmpty) {
+      _hardErrors = 0; // nghe được chữ → máy đang hoạt động bình thường
       _noSpeechTimer?.cancel();
-      _armSilenceTimer();
+      if (!_stopRequested) _armSilenceTimer(); // đã yêu cầu dừng thì không hẹn lại
       if (!r.finalResult) _currentPartial = words;
     }
-        if (r.finalResult) {
+    if (r.finalResult) {
       final alts = r.alternates
           .map((a) => a.recognizedWords.trim())
           .where((w) => w.isNotEmpty && w != words)
@@ -260,6 +286,10 @@ class VoiceService {
       );
     }
     _onPartial?.call(_fullText);
+    // Đang chờ chốt câu mà kết quả cuối đã về → chốt ngay, khỏi chờ hết giờ.
+    if (_stopRequested && r.finalResult) {
+      _scheduleFinish(const Duration(milliseconds: 150));
+    }
   }
 
   Future<void> _startSegment() async {
@@ -273,8 +303,8 @@ class VoiceService {
         listenOptions: SpeechListenOptions(
           partialResults: true,
           localeId: _localeId,
-          listenFor: const Duration(seconds: 30),
-          pauseFor: const Duration(seconds: 6),
+          listenFor: const Duration(seconds: 60),
+          pauseFor: const Duration(seconds: 10), // để timer của mình quyết định, không để máy cắt sớm
           listenMode: ListenMode.dictation,
           cancelOnError: false,
         ),
@@ -292,7 +322,7 @@ class VoiceService {
   }
 
   /// Nghe một câu lệnh; ghép nhiều đoạn, chỉ kết thúc khi người dùng im
-  /// ~2,5 giây, bấm dừng, hoặc không nói gì sau ~9 giây.
+  /// ~3,5 giây (6 giây nếu câu còn dang dở), bấm dừng, hoặc không nói gì sau ~9 giây.
   /// Trả về chuỗi rỗng nếu không nghe được; xem [lastIssue] để biết lý do.
   /// Sau khi xong, xem [lastConfidence] và [lastAlternatives].
   Future<String> listenOnce({void Function(String)? onPartial}) async {
@@ -350,7 +380,7 @@ class VoiceService {
       await _stt.stop();
     } catch (_) {}
     // Chờ nền tảng trả nốt kết quả cuối rồi mới chốt.
-    _scheduleFinish(const Duration(milliseconds: 800));
+    _scheduleFinish(_finalWait);
   }
 
   // ───────────────────────────── TTS ─────────────────────────────

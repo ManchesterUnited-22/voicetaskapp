@@ -62,3 +62,56 @@ String friendlyError(Object e) {
   }
   return 'Đã có lỗi xảy ra. Bạn thử lại sau nhé.';
 }
+
+// ───────────── Nhận diện câu hỏi "hiệu suất <kỳ>" ─────────────
+
+/// Nhãn đọc lên cho từng kỳ.
+const perfPeriodLabel = <String, String>{
+  'day': 'hôm nay',
+  'week': 'tuần này',
+  'month': 'tháng này',
+  'year': 'năm nay',
+};
+
+class PerfMatch {
+  final String period; // day | week | month | year
+
+  /// true: từ chỉ kỳ nghe đúng chuẩn. false: chỉ là nghe gần giống
+  /// (vd "thắng" thay vì "tháng") → phải hỏi lại người dùng.
+  final bool exact;
+  const PerfMatch(this.period, this.exact);
+}
+
+/// Nhận ra câu hỏi "đánh giá hiệu suất <kỳ>". Trả về null nếu không phải
+/// (hoặc không có từ chỉ kỳ → để Gemini xử lý).
+PerfMatch? matchPerformance(String text) {
+  final t = text
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^\p{L}\p{M}\p{N}\s]', unicode: true), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  final m = RegExp(r'(hiệu|năng) (suất|xuất|sút|sức|suốt)').firstMatch(t);
+  if (m == null) return null;
+
+  const exact = <String, String>{
+    'tháng': 'month', 'tuần': 'week', 'năm': 'year', 'hôm': 'day', 'ngày': 'day',
+  };
+  const near = <String, String>{
+    'thắng': 'month', 'thấp': 'month', 'thán': 'month', 'thang': 'month',
+    'thăng': 'month', 'thản': 'month',
+    'tuấn': 'week', 'tuân': 'week', 'tuận': 'week',
+    'nằm': 'year', 'nấm': 'year', 'nắm': 'year',
+  };
+  final tail = t.substring(m.end).trim();
+  if (tail.isNotEmpty) {
+    for (final w in tail.split(' ').take(5)) {
+      if (exact[w] != null) return PerfMatch(exact[w]!, true);
+      if (near[w] != null) return PerfMatch(near[w]!, false);
+    }
+  }
+  // Nói đảo ("tháng này đánh giá hiệu suất"): chỉ tin các từ viết đúng.
+  for (final w in t.substring(0, m.start).split(' ')) {
+    if (exact[w] != null) return PerfMatch(exact[w]!, true);
+  }
+  return null;
+}
